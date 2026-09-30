@@ -1,0 +1,78 @@
+name: Release
+
+# Push a tag like v1.2.0 (matching package.json "version") to publish:
+#   - signed + notarized macOS .dmg/.zip (arm64, x64) and latest-mac.yml
+#   - signed Windows NSIS .exe and latest.yml
+#   - install.sh / install.ps1 with the expected signer pinned
+# The latest*.yml files feed both electron-updater and the install scripts.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-latest
+            target: --mac
+          - os: windows-latest
+            target: --win
+    runs-on: ${{ matrix.os }}
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Check the tag matches package.json
+        shell: bash
+        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+
+      - name: Provisioning profile and team id (macOS)
+        if: runner.os == 'macOS'
+        env:
+          PROFILE_B64: ${{ secrets.MAC_PROVISIONING_PROFILE_B64 }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "$PROFILE_B64" | base64 --decode > build/embedded.provisionprofile
+          sed -i '' "s/TEAMID/$TEAM_ID/g" build/entitlements.mac.plist
+
+      - name: Build, sign and publish
+        env:
+          NODE_ENV: production
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS: Developer ID Application certificate (.p12) + notarization
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.MAC_CSC_LINK || secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          npm run build
+          npm run rebuild:native
+          npx electron-builder ${{ matrix.target }} --publish always
+
+  install-scripts:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin the expected signer and attach the scripts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          PUBLISHER: ${{ vars.WIN_PUBLISHER_NAME || 'Kukux' }}
+        run: |
+          sed -i "s/__KUKUX_TEAM_ID__/$TEAM_ID/" scripts/install.sh
+          sed -i "s/__KUKUX_PUBLISHER__/$PUBLISHER/" scripts/install.ps1
+          gh release upload "$GITHUB_REF_NAME" scripts/install.sh scripts/install.ps1 --clobber

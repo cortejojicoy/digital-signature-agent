@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # Runners have no Secure Enclave, TPM or Hello (plan §12).
+      KUKUX_KEYSTORE_BACKEND: software
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:native
+      - run: npm run test:native
+      - run: npm run build
+
+  # Build an unsigned package and run the real install scripts against it,
+  # over the same latest*.yml download path users get (docs/installation.md).
+  installers:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build an unsigned package
+        shell: bash
+        run: |
+          NODE_ENV=production npm run build
+          npm run rebuild:native
+          npx electron-builder --config electron-builder.local.yml ${{ runner.os == 'macOS' && '--mac' || '--win' }} --publish never
+      - name: Serve release/ locally
+        shell: bash
+        run: |
+          cp scripts/install.sh scripts/install.ps1 release/
+          (cd release && python3 -m http.server 8899 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          sleep 2
+
+      - name: install.sh (download, checksum, install, uninstall)
+        if: runner.os == 'macOS'
+        run: |
+          curl -fsSL http://127.0.0.1:8899/install.sh | bash -s -- --base-url http://127.0.0.1:8899 --allow-unsigned --no-launch --dir "$RUNNER_TEMP/Apps"
+          test -x "$RUNNER_TEMP/Apps/Kukux Sign Agent.app/Contents/MacOS/Kukux Sign Agent"
+          # A tampered checksum must be refused.
+          mkdir -p release/bad && cp release/*.zip release/bad/
+          sed 's/sha512: /sha512: AAAA/' release/latest-mac.yml > release/bad/latest-mac.yml
+          ! curl -fsSL http://127.0.0.1:8899/install.sh | bash -s -- --base-url http://127.0.0.1:8899/bad --allow-unsigned --no-launch --dir "$RUNNER_TEMP/Bad"
+          # Without --allow-unsigned, an ad-hoc build must be refused.
+          ! curl -fsSL http://127.0.0.1:8899/install.sh | bash -s -- --base-url http://127.0.0.1:8899 --no-launch --dir "$RUNNER_TEMP/Bad"
+          KUKUX_AGENT_INSTALL_DIR="$RUNNER_TEMP/Apps" bash scripts/install.sh --uninstall
+          test ! -e "$RUNNER_TEMP/Apps/Kukux Sign Agent.app"
+
+      - name: install.ps1 (download, checksum, install, uninstall)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:KUKUX_AGENT_BASE_URL = 'http://127.0.0.1:8899'
+          $env:KUKUX_AGENT_ALLOW_UNSIGNED = '1'
+          & ([scriptblock]::Create((Invoke-RestMethod http://127.0.0.1:8899/install.ps1))) -NoLaunch
+          $cmd = (Get-ItemProperty 'HKCU:\Software\Classes\kukuxsign\shell\open\command').'(default)'
+          Write-Host "kukuxsign handler: $cmd"
+          if ($cmd -notmatch 'Kukux Sign Agent\.exe') { throw 'kukuxsign:// is not registered' }
+          & ./scripts/install.ps1 -Uninstall -Purge
+          if (Test-Path 'HKCU:\Software\Classes\kukuxsign') { throw 'kukuxsign:// is still registered' }
