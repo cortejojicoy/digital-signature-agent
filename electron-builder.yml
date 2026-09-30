@@ -79,6 +79,6 @@ nsis:
 # and upload the same files there (docs/installation.md).
 publish:
   provider: github
-  owner: kukux
+  owner: cortejojicoy
   repo: digital-signature-agent
   releaseType: release
