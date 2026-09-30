@@ -1,10 +1,25 @@
 name: Release
 
 # Push a tag like v1.2.0 (matching package.json "version") to publish:
-#   - signed + notarized macOS .dmg/.zip (arm64, x64) and latest-mac.yml
-#   - signed Windows NSIS .exe and latest.yml
-#   - install.sh / install.ps1 with the expected signer pinned
+#   - macOS .dmg/.zip (arm64, x64) and latest-mac.yml
+#   - Windows NSIS .exe and latest.yml
+#   - install.sh / install.ps1, with the expected signer pinned when signed
 # The latest*.yml files feed both electron-updater and the install scripts.
+#
+# Free by default: with no secrets, macOS is ad-hoc signed (keys still in the
+# Secure Enclave) and Windows is unsigned (keys still in the TPM / Hello). See
+# docs/installation.md#free-and-signed-builds.
+#
+# Optional paid signing: a platform is signed when ALL of its secrets exist in
+# the "release" environment (or the repository):
+#   macOS:   MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD, MAC_PROVISIONING_PROFILE_B64,
+#            APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
+#   Windows: WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD
+# Set the repository variable REQUIRE_SIGNED_RELEASE to "true" to make a
+# release fail instead of falling back to a free build.
+#
+# Everything is uploaded to a draft release, which is published only after
+# every platform and the install scripts are attached.
 on:
   push:
     tags: ['v*']
@@ -12,10 +27,30 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches package.json
+        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "Kukux Sign Agent ${GITHUB_REF_NAME#v}" --notes "Install: see docs/installation.md"
+          fi
+
   build:
+    needs: prepare
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -24,6 +59,10 @@ jobs:
             target: --win
     runs-on: ${{ matrix.os }}
     environment: release
+    outputs:
+      # One output per platform, so the publish job knows what was signed.
+      mac_signed: ${{ steps.build.outputs.mac_signed }}
+      win_signed: ${{ steps.build.outputs.win_signed }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,47 +71,96 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - name: Check the tag matches package.json
+
+      - name: Build and upload to the draft release
+        id: build
         shell: bash
-        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
-
-      - name: Provisioning profile and team id (macOS)
-        if: runner.os == 'macOS'
-        env:
-          PROFILE_B64: ${{ secrets.MAC_PROVISIONING_PROFILE_B64 }}
-          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          echo "$PROFILE_B64" | base64 --decode > build/embedded.provisionprofile
-          sed -i '' "s/TEAMID/$TEAM_ID/g" build/entitlements.mac.plist
-
-      - name: Build, sign and publish
         env:
           NODE_ENV: production
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS: Developer ID Application certificate (.p12) + notarization
-          CSC_LINK: ${{ runner.os == 'macOS' && secrets.MAC_CSC_LINK || secrets.WIN_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD }}
+          REQUIRE_SIGNED: ${{ vars.REQUIRE_SIGNED_RELEASE }}
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          MAC_PROVISIONING_PROFILE_B64: ${{ secrets.MAC_PROVISIONING_PROFILE_B64 }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        shell: bash
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            platform=mac
+            required="MAC_CSC_LINK MAC_CSC_KEY_PASSWORD MAC_PROVISIONING_PROFILE_B64 APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID"
+          else
+            platform=win
+            required="WIN_CSC_LINK WIN_CSC_KEY_PASSWORD"
+          fi
+          missing=""
+          for name in $required; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+
+          config=electron-builder.yml
+          if [ -z "$missing" ]; then
+            echo "${platform}_signed=true" >> "$GITHUB_OUTPUT"
+            export KUKUX_SIGNED_BUILD=true
+            if [ "$platform" = "mac" ]; then
+              echo "$MAC_PROVISIONING_PROFILE_B64" | base64 --decode > build/embedded.provisionprofile
+              sed -i '' "s/TEAMID/$APPLE_TEAM_ID/g" build/entitlements.mac.plist
+              export CSC_LINK="$MAC_CSC_LINK" CSC_KEY_PASSWORD="$MAC_CSC_KEY_PASSWORD"
+            else
+              export CSC_LINK="$WIN_CSC_LINK" CSC_KEY_PASSWORD="$WIN_CSC_KEY_PASSWORD"
+            fi
+          elif [ "$REQUIRE_SIGNED" = "true" ]; then
+            echo "::error title=Signing secrets missing::REQUIRE_SIGNED_RELEASE is set but $RUNNER_OS is missing:$missing (Settings → Environments → release)."
+            exit 1
+          else
+            echo "${platform}_signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Free $RUNNER_OS build::No paid code signing (missing:$missing). Keys still use the Secure Enclave / TPM."
+            config=electron-builder.free.yml
+            export CSC_IDENTITY_AUTO_DISCOVERY=false KUKUX_SIGNED_BUILD=false
+          fi
+
           npm run build
           npm run rebuild:native
-          npx electron-builder ${{ matrix.target }} --publish always
+          npx electron-builder ${{ matrix.target }} --config "$config" --publish always -c.publish.releaseType=draft
 
-  install-scripts:
+  publish:
     needs: build
     runs-on: ubuntu-latest
     environment: release
     steps:
       - uses: actions/checkout@v4
-      - name: Pin the expected signer and attach the scripts
+      - name: Attach the install scripts and publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           PUBLISHER: ${{ vars.WIN_PUBLISHER_NAME || 'Kukux' }}
+          MAC_SIGNED: ${{ needs.build.outputs.mac_signed }}
+          WIN_SIGNED: ${{ needs.build.outputs.win_signed }}
         run: |
-          sed -i "s/__KUKUX_TEAM_ID__/$TEAM_ID/" scripts/install.sh
-          sed -i "s/__KUKUX_PUBLISHER__/$PUBLISHER/" scripts/install.ps1
-          gh release upload "$GITHUB_REF_NAME" scripts/install.sh scripts/install.ps1 --clobber
+          # Tell each script what this release is: signed releases pin the
+          # expected signer; free ones skip the paid-signature checks (the
+          # SHA-512 and bundle checks always run).
+          if [ "$MAC_SIGNED" = "true" ]; then
+            sed -i -e "s/__KUKUX_TEAM_ID__/$TEAM_ID/" -e "s/__KUKUX_RELEASE_SIGNED__/true/" scripts/install.sh
+          else
+            sed -i "s/__KUKUX_RELEASE_SIGNED__/false/" scripts/install.sh
+          fi
+          if [ "$WIN_SIGNED" = "true" ]; then
+            sed -i -e "s/__KUKUX_PUBLISHER__/$PUBLISHER/" -e "s/__KUKUX_RELEASE_SIGNED__/true/" scripts/install.ps1
+          else
+            sed -i "s/__KUKUX_RELEASE_SIGNED__/false/" scripts/install.ps1
+          fi
+          gh release upload "$GITHUB_REF_NAME" scripts/install.sh scripts/install.ps1 --clobber --repo "$GITHUB_REPOSITORY"
+
+          notes="Install: see [docs/installation.md](https://github.com/$GITHUB_REPOSITORY/blob/main/docs/installation.md)."
+          if [ "$MAC_SIGNED" != "true" ] || [ "$WIN_SIGNED" != "true" ]; then
+            notes="$notes
+
+          **Free build** (paid code signing — macOS: ${MAC_SIGNED:-false}, Windows: ${WIN_SIGNED:-false}).
+          Keys still live in the Secure Enclave / TPM. The one-line installers work as-is; if you open a
+          downloaded file directly, allow it once: macOS → System Settings → Privacy & Security → Open Anyway;
+          Windows → SmartScreen → More info → Run anyway."
+          fi
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes "$notes"

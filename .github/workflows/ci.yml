@@ -51,7 +51,7 @@ jobs:
         run: |
           NODE_ENV=production npm run build
           npm run rebuild:native
-          npx electron-builder --config electron-builder.local.yml ${{ runner.os == 'macOS' && '--mac' || '--win' }} --publish never
+          npx electron-builder --config electron-builder.free.yml ${{ runner.os == 'macOS' && '--mac' || '--win' }} --publish never
       - name: Serve release/ locally
         shell: bash
         run: |
@@ -62,14 +62,15 @@ jobs:
       - name: install.sh (download, checksum, install, uninstall)
         if: runner.os == 'macOS'
         run: |
-          curl -fsSL http://127.0.0.1:8899/install.sh | bash -s -- --base-url http://127.0.0.1:8899 --allow-unsigned --no-launch --dir "$RUNNER_TEMP/Apps"
+          # A free (ad-hoc signed) build installs with no flags.
+          curl -fsSL http://127.0.0.1:8899/install.sh | bash -s -- --base-url http://127.0.0.1:8899 --no-launch --dir "$RUNNER_TEMP/Apps"
           test -x "$RUNNER_TEMP/Apps/Kukux Sign Agent.app/Contents/MacOS/Kukux Sign Agent"
           # A tampered checksum must be refused.
           mkdir -p release/bad && cp release/*.zip release/bad/
           sed 's/sha512: /sha512: AAAA/' release/latest-mac.yml > release/bad/latest-mac.yml
-          ! curl -fsSL http://127.0.0.1:8899/install.sh | bash -s -- --base-url http://127.0.0.1:8899/bad --allow-unsigned --no-launch --dir "$RUNNER_TEMP/Bad"
-          # Without --allow-unsigned, an ad-hoc build must be refused.
-          ! curl -fsSL http://127.0.0.1:8899/install.sh | bash -s -- --base-url http://127.0.0.1:8899 --no-launch --dir "$RUNNER_TEMP/Bad"
+          ! curl -fsSL http://127.0.0.1:8899/install.sh | bash -s -- --base-url http://127.0.0.1:8899/bad --no-launch --dir "$RUNNER_TEMP/Bad"
+          # A release marked as signed must refuse an ad-hoc build.
+          ! curl -fsSL http://127.0.0.1:8899/install.sh | KUKUX_AGENT_RELEASE_SIGNED=true bash -s -- --base-url http://127.0.0.1:8899 --no-launch --dir "$RUNNER_TEMP/Bad"
           KUKUX_AGENT_INSTALL_DIR="$RUNNER_TEMP/Apps" bash scripts/install.sh --uninstall
           test ! -e "$RUNNER_TEMP/Apps/Kukux Sign Agent.app"
 
@@ -78,7 +79,13 @@ jobs:
         shell: pwsh
         run: |
           $env:KUKUX_AGENT_BASE_URL = 'http://127.0.0.1:8899'
-          $env:KUKUX_AGENT_ALLOW_UNSIGNED = '1'
+          # A release marked as signed must refuse an unsigned installer.
+          $env:KUKUX_AGENT_RELEASE_SIGNED = 'true'
+          $refused = $false
+          try { & ([scriptblock]::Create((Invoke-RestMethod http://127.0.0.1:8899/install.ps1))) -NoLaunch } catch { $refused = $true }
+          if (-not $refused) { throw 'an unsigned installer was accepted for a signed release' }
+          # A free (unsigned) build installs with no flags.
+          Remove-Item Env:KUKUX_AGENT_RELEASE_SIGNED
           & ([scriptblock]::Create((Invoke-RestMethod http://127.0.0.1:8899/install.ps1))) -NoLaunch
           $cmd = (Get-ItemProperty 'HKCU:\Software\Classes\kukuxsign\shell\open\command').'(default)'
           Write-Host "kukuxsign handler: $cmd"
