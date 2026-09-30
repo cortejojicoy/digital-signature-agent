@@ -56,14 +56,31 @@ export function isKeyStoreError(err: unknown, code: KeyStoreErrorCode): boolean 
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === code;
 }
 
+/** Seals small secrets to this machine's security chip (macOS Secure Enclave). */
+export interface Sealer {
+  sealingAvailable(): boolean;
+  sealData(plain: Buffer): Buffer;
+  openData(sealed: Buffer): Buffer;
+}
+
+export interface NativeModule extends KeyStore, Sealer {
+  configure(o: { keyDirectory: string }): void;
+}
+
 /**
  * Loads the addon. Packaged builds keep it in app.asar.unpacked, because
  * native modules can't be loaded from inside an asar archive.
+ *
+ * `keyDirectory` holds file-backed keys: on macOS, Secure Enclave keys created
+ * without the keychain (free builds) are stored there as SE-wrapped blobs
+ * that only this Mac's Secure Enclave can use.
  */
-export function loadNativeKeyStore(appRoot: string): KeyStore {
+export function loadNativeKeyStore(appRoot: string, options: { keyDirectory: string }): NativeModule {
   const file = path
     .join(appRoot, 'native', 'build', 'Release', 'keystore.node')
     .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require(file) as KeyStore;
+  const native = require(file) as NativeModule;
+  native.configure({ keyDirectory: options.keyDirectory });
+  return native;
 }

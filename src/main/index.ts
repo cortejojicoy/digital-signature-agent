@@ -26,10 +26,11 @@ import {
 import { Agent } from './agent';
 import { APP_ORIGIN, appUrl, handleAppScheme, registerAppScheme } from './app-protocol';
 import type { ConfirmRequest, JobOutcome } from './jobs';
-import { loadNativeKeyStore } from './keystore';
+import { loadNativeKeyStore, type Sealer } from './keystore';
 import type { PairingProgress } from './pairing';
 import { SCHEME, linkFromArgv } from './protocol';
-import { Store } from './store';
+import { AVOID_KEYCHAIN } from './build-info';
+import { Store, sealedTokenCipher, type TokenCipher } from './store';
 import { checkForUpdates, startUpdater } from './updater';
 
 const APP_ROOT = path.join(__dirname, '..', '..');
@@ -48,6 +49,8 @@ if (!app.requestSingleInstanceLock()) {
     app.setAsDefaultProtocolClient(SCHEME);
   }
   app.enableSandbox();
+  // Free macOS builds: keep Chromium out of the login keychain (build-info.ts).
+  if (AVOID_KEYCHAIN) app.commandLine.appendSwitch('use-mock-keychain');
   registerAppScheme();
   main();
 }
@@ -105,15 +108,12 @@ function main(): void {
     session.defaultSession.setDevicePermissionHandler(() => false);
     if (process.platform === 'darwin') app.dock?.hide();
 
-    const store = new Store(app.getPath('userData'), {
-      isAvailable: () => safeStorage.isEncryptionAvailable(),
-      encrypt: (plain) => safeStorage.encryptString(plain),
-      decrypt: (cipher) => safeStorage.decryptString(cipher),
-    });
+    const keystore = loadNativeKeyStore(APP_ROOT, { keyDirectory: path.join(app.getPath('userData'), 'keys') });
+    const store = new Store(app.getPath('userData'), tokenCipher(keystore));
     await store.load();
 
     agent = new Agent({
-      keystore: loadNativeKeyStore(APP_ROOT),
+      keystore,
       store,
       agentVersion: app.getVersion(),
       allowInsecureLocalhost: DEV,
@@ -353,6 +353,22 @@ function main(): void {
     handle(IPC.rejectJob, (id: string) => decide(id, false));
     handle(IPC.unpair, (serverId: string) => agent!.unpair(serverId));
   }
+}
+
+/**
+ * Where agent tokens are encrypted. Signed builds and Windows use safeStorage
+ * (Keychain / DPAPI). Free macOS builds seal them to the Secure Enclave, so
+ * the keychain never prompts after an update. A free build on a Mac without a
+ * Secure Enclave falls back to safeStorage, which with the mock keychain only
+ * obscures the token; it's still useless without the session key.
+ */
+function tokenCipher(sealer: Sealer): TokenCipher {
+  if (AVOID_KEYCHAIN && sealer.sealingAvailable()) return sealedTokenCipher(sealer);
+  return {
+    isAvailable: () => safeStorage.isEncryptionAvailable(),
+    encrypt: (plain) => safeStorage.encryptString(plain),
+    decrypt: (cipher) => safeStorage.decryptString(cipher),
+  };
 }
 
 function toProgressView(p: PairingProgress): PairingProgressView {

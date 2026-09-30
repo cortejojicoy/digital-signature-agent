@@ -32,6 +32,19 @@ export interface TokenCipher {
   decrypt(cipher: Buffer): string;
 }
 
+/** Agent tokens sealed to the Secure Enclave (free macOS builds, no keychain). */
+export function sealedTokenCipher(sealer: {
+  sealingAvailable(): boolean;
+  sealData(plain: Buffer): Buffer;
+  openData(sealed: Buffer): Buffer;
+}): TokenCipher {
+  return {
+    isAvailable: () => sealer.sealingAvailable(),
+    encrypt: (plain) => sealer.sealData(Buffer.from(plain, 'utf8')),
+    decrypt: (cipher) => sealer.openData(cipher).toString('utf8'),
+  };
+}
+
 interface ServersFile {
   version: 1;
   servers: PairedServer[];
