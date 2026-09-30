@@ -1,0 +1,117 @@
+{
+  "description": "Shared test vectors for the canonical proof message (desktop-agent-plan.md \u00a78, \u00a712). Consumed by the agent's canonical.ts tests and the package's Pest tests; both sides must build byte-identical messages.",
+  "messages": [
+    {
+      "purpose": "register_agent",
+      "nonce": "q83vEjRWeJq83vEjRWeJq83vEjRWeJq83vEjRWeJq80",
+      "user_id": "42",
+      "payload_hash": "189a46197fd2eea4a9b49f750cd5d05080ed878e13c704d1e58bbf5b352e4154",
+      "message": "v1|register_agent|q83vEjRWeJq83vEjRWeJq83vEjRWeJq83vEjRWeJq80|42|189a46197fd2eea4a9b49f750cd5d05080ed878e13c704d1e58bbf5b352e4154"
+    },
+    {
+      "purpose": "sign_receipt",
+      "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "user_id": "42",
+      "payload_hash": "43cc23fa52b87b4cc1d02b5b114154151d6adddb17c9fddc06b027fa99e24008",
+      "message": "v1|sign_receipt|AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8|42|43cc23fa52b87b4cc1d02b5b114154151d6adddb17c9fddc06b027fa99e24008"
+    },
+    {
+      "purpose": "request",
+      "nonce": "ZmFrZS1ub25jZS0xMjM",
+      "user_id": "7",
+      "payload_hash": "16f55ff9363fd17f8d2bcdad0952f4d34355e0d7336881bad9b44bcccea375dc",
+      "message": "v1|request|ZmFrZS1ub25jZS0xMjM|7|16f55ff9363fd17f8d2bcdad0952f4d34355e0d7336881bad9b44bcccea375dc"
+    },
+    {
+      "purpose": "sign_receipt",
+      "nonce": "_-_-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "user_id": "01HZX3Y8K2M4N6P8Q0R2S4T6V8",
+      "payload_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "message": "v1|sign_receipt|_-_-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|01HZX3Y8K2M4N6P8Q0R2S4T6V8|ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/signature/agent/status",
+      "body": "",
+      "timestamp": "1767225600",
+      "input": "GET|/signature/agent/status||1767225600",
+      "payload_hash": "16f55ff9363fd17f8d2bcdad0952f4d34355e0d7336881bad9b44bcccea375dc"
+    },
+    {
+      "method": "POST",
+      "path": "/signature/agent/jobs/0b7a4f5e-1c2d-4e3f-8a9b-0c1d2e3f4a5b/complete",
+      "body": "{\"proof\":\"MEUCIQ\"}",
+      "timestamp": "1767225661",
+      "input": "POST|/signature/agent/jobs/0b7a4f5e-1c2d-4e3f-8a9b-0c1d2e3f4a5b/complete|{\"proof\":\"MEUCIQ\"}|1767225661",
+      "payload_hash": "d2ea3c6f376bb27c768e531c46b62758d3f6bfd5014ebffa5a3b29b63d17a388"
+    },
+    {
+      "method": "POST",
+      "path": "/signature/agent/jobs/0b7a4f5e-1c2d-4e3f-8a9b-0c1d2e3f4a5b/claim?x=1",
+      "body": "{\"link_token\":\"abc\"}",
+      "timestamp": "1767225700",
+      "input": "POST|/signature/agent/jobs/0b7a4f5e-1c2d-4e3f-8a9b-0c1d2e3f4a5b/claim?x=1|{\"link_token\":\"abc\"}|1767225700",
+      "payload_hash": "e0173422a5158319ba0c0ca125058706dc9cff30a2d2f6f1a5f8faac33fb08ee"
+    }
+  ],
+  "registrations": [
+    {
+      "identity_spki": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWg==",
+      "session_spki": "W1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4CBgoOEhYaHiImKi4yNjo+QkZKTlJWWl5iZmpucnZ6foKGio6SlpqeoqaqrrK2ur7CxsrO0tQ==",
+      "payload_hash": "621009f0bf8ca1d70eedfa30eb6e2979794469b4e99ee385fd9501712b45cb6a"
+    }
+  ],
+  "invalid": [
+    {
+      "purpose": "sign_receipt",
+      "nonce": "has|pipe",
+      "user_id": "42",
+      "payload_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "why": "nonce must be base64url"
+    },
+    {
+      "purpose": "sign_receipt",
+      "nonce": "abc",
+      "user_id": "4|2",
+      "payload_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "why": "user_id must not contain |"
+    },
+    {
+      "purpose": "sign_receipt",
+      "nonce": "abc",
+      "user_id": "42",
+      "payload_hash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "why": "payload_hash must be lowercase hex"
+    },
+    {
+      "purpose": "sign_receipt",
+      "nonce": "abc",
+      "user_id": "42",
+      "payload_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "why": "payload_hash must be 64 chars"
+    },
+    {
+      "purpose": "Sign-Receipt",
+      "nonce": "abc",
+      "user_id": "42",
+      "payload_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "why": "purpose must be [a-z_]"
+    },
+    {
+      "purpose": "sign_receipt",
+      "nonce": "",
+      "user_id": "42",
+      "payload_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "why": "nonce must not be empty"
+    },
+    {
+      "purpose": "sign_receipt",
+      "nonce": "abc",
+      "user_id": "",
+      "payload_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "why": "user_id must not be empty"
+    }
+  ]
+}
