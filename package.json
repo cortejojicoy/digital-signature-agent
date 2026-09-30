@@ -20,7 +20,7 @@
     "dist:win": "npm run build && npm run rebuild:native && electron-builder --win",
     "mock-server": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON test/support/mock-server.ts",
     "test:all": "npm run typecheck && npm test && npm run build:native && npm run test:native",
-    "dist:local": "NODE_ENV=production npm run build && npm run rebuild:native && electron-builder --config electron-builder.local.yml --publish never"
+    "dist:local": "NODE_ENV=production npm run build && npm run rebuild:native && electron-builder --config electron-builder.free.yml --publish never"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
