@@ -7,7 +7,9 @@ web app, and proves on each signing that *this* machine was used, with Touch
 ID or Windows Hello enforced by the key itself.
 
 Design: [desktop-agent-plan.md](desktop-agent-plan.md). Wire contract for the
-server: [docs/protocol.md](docs/protocol.md).
+server: [docs/protocol.md](docs/protocol.md). Docs and full API reference:
+[cortejojicoy.github.io/digital-signature-agent](https://cortejojicoy.github.io/digital-signature-agent/)
+(source in [docs/](docs/), deployed by [.github/workflows/pages.yml](.github/workflows/pages.yml)).
 
 ## Install
 
