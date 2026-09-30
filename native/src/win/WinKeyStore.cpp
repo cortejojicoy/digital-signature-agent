@@ -163,4 +163,18 @@ std::unique_ptr<KeyStore> createPlatformKeyStore(Backend backend) {
     return std::make_unique<WinKeyStore>(backend);
 }
 
+// Windows keeps agent tokens in safeStorage (DPAPI), which isn't tied to the
+// app's signature, so there's nothing to seal here.
+bool sealingAvailable() {
+    return false;
+}
+
+Bytes sealData(const Bytes&) {
+    throw Error(ErrorCode::Unsupported, "sealing is not used on Windows");
+}
+
+Bytes openData(const Bytes&) {
+    throw Error(ErrorCode::Unsupported, "sealing is not used on Windows");
+}
+
 }  // namespace ks
