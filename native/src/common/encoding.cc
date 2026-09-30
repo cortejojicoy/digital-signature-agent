@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <mutex>
 
 namespace ks {
 
@@ -90,6 +92,23 @@ std::string saltedHardwareHash(const std::string& salt, const std::string& uuid)
     Bytes input(salt.begin(), salt.end());
     input.insert(input.end(), upper.begin(), upper.end());
     return hexEncode(sha256(input));
+}
+
+namespace {
+std::mutex g_keyDirMutex;
+std::string g_keyDir;
+}  // namespace
+
+void setKeyDirectory(const std::string& path) {
+    std::lock_guard<std::mutex> lock(g_keyDirMutex);
+    g_keyDir = path;
+}
+
+std::string keyDirectory() {
+    std::lock_guard<std::mutex> lock(g_keyDirMutex);
+    if (!g_keyDir.empty()) return g_keyDir;
+    const char* home = std::getenv("HOME");
+    return std::string(home ? home : "") + "/Library/Application Support/Kukux Sign Agent/keys";
 }
 
 }  // namespace ks
