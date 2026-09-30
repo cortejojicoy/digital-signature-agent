@@ -226,6 +226,47 @@ Napi::Value DeviceInfo(const Napi::CallbackInfo& info) {
         });
 }
 
+// configure({ keyDirectory }): where file-backed keys live (macOS SE blobs).
+Napi::Value Configure(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (!info[0].IsObject()) throw Napi::TypeError::New(env, "configure expects an options object");
+    Napi::Object o = info[0].As<Napi::Object>();
+    if (o.Has("keyDirectory")) {
+        if (!o.Get("keyDirectory").IsString()) throw Napi::TypeError::New(env, "keyDirectory must be a string");
+        std::string dir = o.Get("keyDirectory").As<Napi::String>().Utf8Value();
+        const bool absolute = !dir.empty() && (dir[0] == '/' || (dir.size() > 2 && dir[1] == ':'));
+        if (!absolute) {
+            throw Napi::TypeError::New(env, "keyDirectory must be an absolute path");
+        }
+        std::lock_guard<std::mutex> lock(g_mutex);
+        ks::setKeyDirectory(dir);
+    }
+    return env.Undefined();
+}
+
+// Synchronous on purpose (a few ms, never prompts), so the token store can
+// stay synchronous. They don't take g_mutex, which a pending OS prompt holds.
+Napi::Value SealingAvailable(const Napi::CallbackInfo& info) {
+    return Napi::Boolean::New(info.Env(), ks::sealingAvailable());
+}
+
+Napi::Value SealOrOpen(const Napi::CallbackInfo& info, bool seal) {
+    Napi::Env env = info.Env();
+    if (!info[0].IsBuffer()) throw Napi::TypeError::New(env, "expected a Buffer");
+    auto buf = info[0].As<Napi::Buffer<uint8_t>>();
+    Bytes input(buf.Data(), buf.Data() + buf.Length());
+    try {
+        return toBuffer(env, seal ? ks::sealData(input) : ks::openData(input));
+    } catch (const ks::Error& e) {
+        Napi::Error err = Napi::Error::New(env, e.what());
+        err.Set("code", e.codeName());
+        throw err;
+    }
+}
+
+Napi::Value SealData(const Napi::CallbackInfo& info) { return SealOrOpen(info, true); }
+Napi::Value OpenData(const Napi::CallbackInfo& info) { return SealOrOpen(info, false); }
+
 // Test hook, see KeyStore::privateKeyExportable.
 Napi::Value ProbeExportable(const Napi::CallbackInfo& info) {
     std::string keyId = requireKeyId(info[0]);
@@ -243,6 +284,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("attest", Napi::Function::New(env, Attest));
     exports.Set("deleteKey", Napi::Function::New(env, DeleteKey));
     exports.Set("deviceInfo", Napi::Function::New(env, DeviceInfo));
+    exports.Set("configure", Napi::Function::New(env, Configure));
+    exports.Set("sealingAvailable", Napi::Function::New(env, SealingAvailable));
+    exports.Set("sealData", Napi::Function::New(env, SealData));
+    exports.Set("openData", Napi::Function::New(env, OpenData));
     exports.Set("_probeExportable", Napi::Function::New(env, ProbeExportable));
     return exports;
 }
