@@ -1,0 +1,84 @@
+appId: com.kukux.signagent
+productName: Kukux Sign Agent
+copyright: Copyright © Kukux
+
+directories:
+  output: release
+  buildResources: build
+
+# Stable, space-free names: the install scripts pick the right file from
+# latest-mac.yml / latest.yml by its "-<os>-<arch>.<ext>" suffix.
+artifactName: kukux-sign-agent-${version}-${os}-${arch}.${ext}
+
+files:
+  - dist/**
+  - native/build/Release/keystore.node
+  - build/tray/**
+  - package.json
+# Native modules can't load from inside an asar archive.
+asarUnpack:
+  - native/build/Release/*.node
+
+# The addon is built by `npm run rebuild:native` against the Electron headers.
+npmRebuild: false
+
+protocols:
+  - name: Kukux Sign
+    schemes:
+      - kukuxsign
+
+# desktop-agent-plan.md §7.1
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  minimumSystemVersion: "12.0"
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  # Secure Enclave keys need the data-protection keychain, which needs
+  # keychain-access-groups plus an embedded provisioning profile, even for
+  # Developer ID distribution (§5.5, spike 0a). Download a Developer ID
+  # provisioning profile for com.kukux.signagent and save it here.
+  provisioningProfile: build/embedded.provisionprofile
+  notarize: true
+  extendInfo:
+    LSUIElement: true # menu-bar app, no Dock icon
+    NSFaceIDUsageDescription: Approve signatures with Touch ID.
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  # Azure Trusted Signing or an EV certificate; configure via environment
+  # (AZURE_* or CSC_LINK / CSC_KEY_PASSWORD) in the release workflow.
+  signtoolOptions:
+    publisherName: Kukux
+
+nsis:
+  oneClick: true
+  perMachine: false # per-user install, no admin
+  allowElevation: false
+
+# GitHub Releases serve the installers, latest*.yml (auto-update feed and
+# install-script metadata) and install.sh / install.ps1. To self-host, build
+# with  -c.publish.provider=generic -c.publish.url=https://your.host/agent
+# and upload the same files there (docs/installation.md).
+publish:
+  provider: github
+  owner: kukux
+  repo: digital-signature-agent
+  releaseType: release
