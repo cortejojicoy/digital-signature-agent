@@ -13,12 +13,12 @@ server: [docs/protocol.md](docs/protocol.md).
 
 ```sh
 # macOS
-curl -fsSL https://github.com/kukux/digital-signature-agent/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.sh | bash
 ```
 
 ```powershell
 # Windows (PowerShell, no admin needed)
-irm https://github.com/kukux/digital-signature-agent/releases/latest/download/install.ps1 | iex
+irm https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.ps1 | iex
 ```
 
 The installers verify the download's SHA-512 and code signature, install for
