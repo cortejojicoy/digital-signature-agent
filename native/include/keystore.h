@@ -100,6 +100,19 @@ public:
 };
 
 std::unique_ptr<KeyStore> createPlatformKeyStore(Backend backend);
+
+// Where file-backed keys are kept (macOS: Secure Enclave blobs, see
+// SecureEnclaveBlob.swift). The app sets it to <userData>/keys; when unset,
+// ~/Library/Application Support/Kukux Sign Agent/keys is used.
+void setKeyDirectory(const std::string& path);
+std::string keyDirectory();
+
+// Seals small secrets (agent tokens) to this machine's security chip, without
+// the keychain. macOS: a Secure Enclave key-agreement key kept in
+// keyDirectory(); no prompt. Windows: unsupported (safeStorage / DPAPI is used).
+bool sealingAvailable();
+Bytes sealData(const Bytes& plain);
+Bytes openData(const Bytes& sealed);
 DeviceInfo readDeviceInfo(const std::string& salt);
 
 }  // namespace ks
