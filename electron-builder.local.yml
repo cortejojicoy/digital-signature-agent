@@ -1,0 +1,17 @@
+# Local, unsigned builds for testing the packaged app and the install scripts
+# (npm run dist:local). Ad-hoc signed on macOS, so no Secure Enclave access:
+# the agent falls back to software keys. Install with --allow-unsigned.
+extends: ./electron-builder.yml
+
+mac:
+  identity: "-"
+  hardenedRuntime: false
+  notarize: false
+  provisioningProfile: null
+  # keychain-access-groups etc. are restricted entitlements: without the
+  # matching provisioning profile, macOS kills the app at launch (SIGKILL).
+  entitlements: build/entitlements.mac.inherit.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  target:
+    - target: zip
+    - target: dmg
