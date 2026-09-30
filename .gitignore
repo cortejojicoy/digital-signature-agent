@@ -1,0 +1,7 @@
+node_modules/
+dist/
+release/
+native/build/
+*.log
+.DS_Store
+build/embedded.provisionprofile
