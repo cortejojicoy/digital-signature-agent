@@ -15,6 +15,7 @@
       ],
       "conditions": [
         ["OS=='mac'", {
+          "dependencies": ["secure_enclave_blob"],
           "sources": [
             "src/mac/SecureEnclaveKeyStore.mm",
             "src/mac/DeviceInfo.mm",
@@ -30,9 +31,14 @@
           },
           "link_settings": {
             "libraries": [
+              "<(module_root_dir)/build/swift/<(target_arch)/SecureEnclaveBlob.o",
+              "-L<!(xcrun --show-sdk-path)/usr/lib/swift",
+              "-L<!(sh tools/swift-libdir.sh)",
+              "-Wl,-rpath,/usr/lib/swift",
               "-framework Foundation",
               "-framework Security",
               "-framework LocalAuthentication",
+              "-framework CryptoKit",
               "-framework IOKit",
               "-framework SystemConfiguration"
             ]
@@ -68,5 +74,24 @@
         }]
       ]
     }
+  ],
+  "conditions": [
+    ["OS=='mac'", {
+      "targets": [
+        {
+          # CryptoKit Secure Enclave keys outside the keychain (free builds).
+          "target_name": "secure_enclave_blob",
+          "type": "none",
+          "actions": [
+            {
+              "action_name": "swiftc",
+              "inputs": ["src/mac/SecureEnclaveBlob.swift", "tools/swiftc.sh"],
+              "outputs": ["<(module_root_dir)/build/swift/<(target_arch)/SecureEnclaveBlob.o"],
+              "action": ["sh", "tools/swiftc.sh", "<(target_arch)", "src/mac/SecureEnclaveBlob.swift", "<@(_outputs)"]
+            }
+          ]
+        }
+      ]
+    }]
   ]
 }
