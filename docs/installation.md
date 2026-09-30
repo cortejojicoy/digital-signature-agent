@@ -42,6 +42,33 @@ The agent starts once it's installed. Next, pair it:
 
 From then on, **Sign with this computer** appears when you sign a document.
 
+## Free and signed builds
+
+The agent is free to build and distribute. Paid code signing is optional, and
+it doesn't change how signing keys are protected.
+
+| | Free build (default) | Signed build (optional, paid) |
+|---|---|---|
+| Cost | Nothing | Apple Developer Program (US$99/year) and/or a Windows code-signing certificate |
+| Where signing keys live | Secure Enclave (Mac) / TPM + Windows Hello (PC) | Same |
+| Touch ID / Windows Hello on every signature | Yes, enforced by the chip | Same |
+| One-line install | Works, no extra steps | Works |
+| Double-clicking a downloaded `.dmg` / `.exe` | Asks once: macOS → System Settings → Privacy & Security → **Open Anyway**; Windows → SmartScreen → **More info → Run anyway** | Opens without warnings |
+| Updates | Windows: automatic. macOS: the agent tells you, and you re-run the installer | Automatic on both |
+
+What paid signing buys is the operating system's trust in *who published the
+app*: Apple or a certificate authority verifies your identity and, on macOS,
+scans each build (notarization). It isn't needed for the hardware keys:
+- **On macOS**, free builds keep keys in the Secure Enclave through CryptoKit,
+  outside the keychain. Only an encrypted blob that this Mac's chip alone can
+  use is stored on disk.
+- **On Windows**, the TPM and Windows Hello work the same whether or not the
+  app is signed.
+
+The release workflow publishes a free build whenever a platform's signing
+secrets aren't set (see [.github/workflows/release.yml](../.github/workflows/release.yml)).
+The release notes say which kind each release is.
+
 ## What the installer checks
 
 The scripts refuse to install anything that fails these checks:
@@ -49,15 +76,22 @@ The scripts refuse to install anything that fails these checks:
 1. **Integrity.** The download's SHA-512 must match `latest-mac.yml` or
    `latest.yml` from the same release. These are the files the agent's
    auto-updater uses.
-2. **Authenticity.**
-   - macOS: the app must pass `codesign --verify --strict`, pass Gatekeeper
-     (`spctl`, which requires a Developer ID signature and notarization), have
-     the bundle id `com.kukux.signagent`, and be signed by the release's Apple
-     team id.
-   - Windows: the installer's Authenticode signature must be `Valid` and come
-     from the expected publisher.
-3. **Transport.** Downloads use HTTPS only. Plain HTTP is allowed only for
+2. **The right app, undamaged.** macOS: the bundle id must be
+   `com.kukux.signagent`, and the app's code signature must be intact
+   (`codesign --verify --strict`; for free builds this is an ad-hoc
+   signature). Windows: a signed installer whose signature is broken is
+   always refused.
+3. **Publisher (signed releases only).** macOS: Gatekeeper must accept the app
+   (`spctl`: a Developer ID signature and notarization), signed by the release's
+   Apple team id. Windows: the Authenticode signature must be `Valid` and come
+   from the expected publisher. Each release's scripts know whether it was
+   signed, so a signed release can't be swapped for an unsigned copy.
+4. **Transport.** Downloads use HTTPS only. Plain HTTP is allowed only for
    `localhost` and `127.0.0.1` when testing a local release directory.
+
+For a free build, after these checks the installer removes the
+"downloaded from the internet" mark, so macOS and Windows open the agent
+without a Gatekeeper or SmartScreen prompt.
 
 The macOS script runs everything inside one function, so a download that
 gets cut off halfway runs nothing. You can read both scripts before running
@@ -86,9 +120,10 @@ curl -fsSL https://github.com/cortejojicoy/digital-signature-agent/releases/late
 | `--from <file>` | `-From <file>` | | Install a `.zip`/`.dmg` or `.exe` you already downloaded |
 | `--dir <path>` | | `KUKUX_AGENT_INSTALL_DIR` | Install location (macOS) |
 | `--no-launch` | `-NoLaunch` | | Don't start the agent afterwards |
-| `--allow-unsigned` | `-AllowUnsigned` | `KUKUX_AGENT_ALLOW_UNSIGNED=1` | Skip the signature checks. **Only for your own development builds.** |
+| `--allow-unsigned` | `-AllowUnsigned` | `KUKUX_AGENT_ALLOW_UNSIGNED=1` | Skip the code-signature checks entirely (the SHA-512 check still runs). Not needed for free releases, **only for your own development builds.** |
 | `--uninstall [--purge]` | `-Uninstall [-Purge]` | | Remove the agent (and, with purge, its settings) |
 | | | `KUKUX_AGENT_TEAM_ID` / `KUKUX_AGENT_PUBLISHER` | Override the expected Apple team id / Windows publisher |
+| | | `KUKUX_AGENT_RELEASE_SIGNED=true\|false` | Override whether the release is expected to be signed |
 
 ## Manual install (no terminal)
 
@@ -103,13 +138,17 @@ Download the file for your computer from the
 
 - **macOS:** open the `.dmg` and drag **Kukux Sign Agent** into
   **Applications**. Open it once from Applications. The key icon appears in the
-  menu bar.
+  menu bar. For a free build, macOS first says it *"can't verify"* the app.
+  Click **Done**, then open **System Settings → Privacy & Security** and click
+  **Open Anyway** next to Kukux Sign Agent. You only need to do this once per
+  version.
 - **Windows:** run the `.exe`. It installs for your account only and starts
   the agent. The key icon appears in the notification area (it may be under
-  the **^** arrow).
+  the **^** arrow). For a free build, SmartScreen shows *"Windows protected your
+  PC"*. Click **More info → Run anyway**.
 
-To get the same checks as the quick install, run the script on the file you
-downloaded:
+To get the same checks as the quick install, and to skip those prompts, run
+the script on the file you downloaded:
 
 ```sh
 bash install.sh --from ~/Downloads/kukux-sign-agent-1.2.0-mac-arm64.dmg
@@ -167,10 +206,16 @@ the web app's *"Don't have the agent? Download"* link goes there too.
 
 ## Updating
 
-The agent updates itself in the background. It checks at startup and every
-six hours, and verifies each update's signature before installing it. If the
-web app requires a newer version, the agent starts an update straight away.
-Re-running the quick install also updates it.
+The agent checks for updates at startup and every six hours. If the web app
+requires a newer version, it checks straight away.
+
+- **Signed builds** update themselves in the background, and verify each
+  update's signature before installing it.
+- **Free builds on Windows** update themselves too, and verify each update
+  against the SHA-512 in `latest.yml` over HTTPS.
+- **Free builds on macOS** can't replace themselves (macOS only lets signed
+  apps do that). The agent shows a notification; click it and re-run the
+  one-line installer. Your pairings and keys are kept.
 
 ## Uninstalling
 
@@ -193,8 +238,11 @@ none of them is ever usable on another machine.
 
 | Problem | Fix |
 |---|---|
-| macOS: *"Gatekeeper rejected the app"* | The download isn't a notarized release (for example, a local build). Use an official release, or pass `--allow-unsigned` only for a build you made yourself. |
-| macOS: the status screen says *Software key · lower assurance* | The Mac has no Secure Enclave (an Intel Mac without a T2 chip, or a VM), or you're running an unsigned build. Signing still works, but the web app shows a lower assurance level and may refuse it if the organisation requires hardware keys. |
+| macOS: *"Gatekeeper rejected the app: this release should be signed…"* | The release is marked as signed, but the file isn't. The download was replaced or damaged. Download it again from the release page. |
+| macOS: *"can't verify"* / *"Apple could not verify"* when opening | A free build opened from a browser download. Use System Settings → Privacy & Security → **Open Anyway**, or install with the one-line installer. |
+| macOS: the status screen says *Software key · lower assurance* | The Mac has no Secure Enclave (an Intel Mac without a T2 chip, or a VM). Signing still works, but the web app shows a lower assurance level and may refuse it if the organisation requires hardware keys. |
+| macOS (free build, Mac without a Secure Enclave): a keychain password prompt after an update | Expected on these Macs: the software key lives in the keychain, whose access is tied to the app's signature. Click **Always Allow**. |
+| Windows: *"Windows protected your PC"* | A free build started from a browser download. Click **More info → Run anyway**, or install with the one-line installer. |
 | Windows: *"signature is NotSigned / HashMismatch"* | The file was changed or isn't an official build. Download it again from the release page. |
 | Windows: no Windows Hello prompt | Set up Windows Hello (Settings → Accounts → Sign-in options). Without it, the agent uses the TPM without an approval prompt, and servers that require presence refuse to pair. |
 | Windows: *"running scripts is disabled on this system"* | Use the `irm … \| iex` one-liner (it doesn't run a script file), or `powershell -ExecutionPolicy Bypass -File .\install.ps1`. |
@@ -204,18 +252,18 @@ none of them is ever usable on another machine.
 ## For developers: installing a local build
 
 ```sh
-npm run dist:local              # unsigned .zip/.dmg + latest-mac.yml in release/
-./scripts/install.sh --from release/kukux-sign-agent-*-mac-arm64.zip --allow-unsigned
+npm run dist:local              # free .zip/.dmg + latest-mac.yml in release/
+./scripts/install.sh --from release/kukux-sign-agent-*-mac-arm64.zip
 ```
 
 Or test the full download path by serving `release/` locally:
 
 ```sh
 cp scripts/install.sh release/ && (cd release && python3 -m http.server 8899)
-curl -fsSL http://127.0.0.1:8899/install.sh | bash -s -- --base-url http://127.0.0.1:8899 --allow-unsigned
+curl -fsSL http://127.0.0.1:8899/install.sh | bash -s -- --base-url http://127.0.0.1:8899
 ```
 
-A local build is ad-hoc signed, so it can't use the Secure Enclave (see
-[README](../README.md#release-builds)). It uses JIT-only entitlements,
-because the restricted keychain entitlements make macOS kill an app at
-launch unless it has a matching provisioning profile.
+A local build is the same as a free release: ad-hoc signed, with keys in the
+Secure Enclave via CryptoKit. It uses JIT-only entitlements, because the
+restricted keychain entitlements make macOS kill an app at launch unless it has
+a matching provisioning profile.
