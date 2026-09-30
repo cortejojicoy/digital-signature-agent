@@ -1,6 +1,10 @@
-# Local, unsigned builds for testing the packaged app and the install scripts
-# (npm run dist:local). Ad-hoc signed on macOS, so no Secure Enclave access:
-# the agent falls back to software keys. Install with --allow-unsigned.
+# Free distribution: no Apple Developer account, no Windows certificate
+# (docs/installation.md#free-and-signed-builds). Used by the release workflow
+# when a platform's signing secrets aren't set, and by `npm run dist:local`.
+#
+# macOS: ad-hoc signed and not notarized. Keys still live in the Secure
+# Enclave, via CryptoKit blobs rather than the keychain (SecureEnclaveBlob.swift).
+# Windows: unsigned. Windows Hello and TPM keys don't depend on code signing.
 extends: ./electron-builder.yml
 
 mac:
@@ -12,6 +16,9 @@ mac:
   # matching provisioning profile, macOS kills the app at launch (SIGKILL).
   entitlements: build/entitlements.mac.inherit.plist
   entitlementsInherit: build/entitlements.mac.inherit.plist
-  target:
-    - target: zip
-    - target: dmg
+
+win:
+  # No publisher to verify updates against; electron-updater then checks
+  # the SHA-512 from latest.yml (over HTTPS) instead of a signature.
+  signtoolOptions:
+    publisherName: null
