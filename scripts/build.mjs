@@ -14,7 +14,11 @@ const common = {
   sourcemap: production ? false : 'inline',
   minify: production,
   logLevel: 'info',
-  define: { 'process.env.NODE_ENV': JSON.stringify(production ? 'production' : 'development') },
+  define: {
+    'process.env.NODE_ENV': JSON.stringify(production ? 'production' : 'development'),
+    // Set by the release workflow when the platform build is code-signed.
+    'process.env.KUKUX_SIGNED_BUILD': JSON.stringify(process.env.KUKUX_SIGNED_BUILD === 'true' ? 'true' : 'false'),
+  },
 };
 
 await Promise.all([

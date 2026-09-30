@@ -8,8 +8,13 @@
 #
 # What it checks before installing anything:
 #   1. the download's SHA-512 matches latest-mac.yml from the same release;
-#   2. the app is signed (codesign --strict), notarized (spctl) and has the
-#      expected bundle id and, when pinned, Apple team id.
+#   2. the bundle id, and that the app's code signature is intact
+#      (codesign --strict; ad-hoc for free builds);
+#   3. signed releases only: Developer ID + notarization (spctl) and, when
+#      pinned, the Apple team id.
+# Free releases (no paid Apple account) are ad-hoc signed; after the checks
+# above the installer clears the quarantine flag so macOS opens the agent
+# without a Gatekeeper prompt. Its keys still live in the Secure Enclave.
 # Everything runs inside main(), so a truncated download executes nothing.
 
 set -euo pipefail
@@ -17,7 +22,11 @@ set -euo pipefail
 APP_NAME="Kukux Sign Agent"
 BUNDLE_ID="com.kukux.signagent"
 DEFAULT_RELEASES="https://github.com/cortejojicoy/digital-signature-agent/releases"
-# Pinned by the release workflow; override with KUKUX_AGENT_TEAM_ID.
+# Set by the release workflow: "true" for a Developer ID release, "false" for
+# a free one. Left as the placeholder (script taken from the repository), the
+# installer decides from the app itself.
+RELEASE_SIGNED="${KUKUX_AGENT_RELEASE_SIGNED:-__KUKUX_RELEASE_SIGNED__}"
+# Pinned by the release workflow for signed releases; override with KUKUX_AGENT_TEAM_ID.
 EXPECTED_TEAM_ID="${KUKUX_AGENT_TEAM_ID:-__KUKUX_TEAM_ID__}"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
@@ -46,14 +55,15 @@ Usage: install.sh [options]
   --from <file>       Install a local .zip or .dmg instead of downloading
   --dir <path>        Install into <path> (default: /Applications, or
                       ~/Applications if /Applications isn't writable)
-  --allow-unsigned    Skip the signature and notarization checks (development
-                      builds only; the SHA-512 check still runs)
+  --allow-unsigned    Skip the code-signature checks entirely (your own
+                      development builds only; the SHA-512 check still runs).
+                      Not needed for free releases.
   --no-launch         Don't start the agent after installing
   --uninstall         Remove the agent (add --purge to delete its settings)
   -h, --help          Show this help
 
 Environment: KUKUX_AGENT_VERSION, KUKUX_AGENT_BASE_URL, KUKUX_AGENT_INSTALL_DIR,
-KUKUX_AGENT_ALLOW_UNSIGNED=1, KUKUX_AGENT_TEAM_ID.
+KUKUX_AGENT_ALLOW_UNSIGNED=1, KUKUX_AGENT_TEAM_ID, KUKUX_AGENT_RELEASE_SIGNED=true|false.
 EOF
 }
 
@@ -120,6 +130,10 @@ main() {
   step "Installing to $dest"
   rm -rf "$dest"
   ditto "$app" "$dest"
+  # A free build isn't notarized, so a quarantine flag (set when the .dmg/.zip
+  # came from a browser) would make Gatekeeper block it. It passed the checks
+  # above, and you chose to install it.
+  if [ "${FREE_BUILD:-0}" = 1 ]; then xattr -dr com.apple.quarantine "$dest" 2>/dev/null || true; fi
   # Register the kukuxsign:// scheme now instead of on first launch.
   [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$dest" >/dev/null 2>&1 || true
 
@@ -238,13 +252,27 @@ verify_app() {
 
   if [ "$allow_unsigned" = 1 ]; then
     say "${RED}warning:${RESET} skipping signature checks (--allow-unsigned). Only do this for your own builds."
+    FREE_BUILD=1
     return
   fi
 
-  step "Verifying signature and notarization"
-  codesign --verify --deep --strict "$app" 2>/dev/null || die "the app's code signature is invalid"
+  step "Verifying the app"
+  codesign --verify --deep --strict "$app" 2>/dev/null || die "the app's code signature is broken (damaged or modified download)"
+
+  local signed="$RELEASE_SIGNED"
+  case "$signed" in
+    true | false) ;;
+    *) if spctl --assess --type execute "$app" 2>/dev/null; then signed=true; else signed=false; fi ;;
+  esac
+
+  if [ "$signed" = false ]; then
+    FREE_BUILD=1
+    say "${DIM}    free build: SHA-512 and bundle verified; ad-hoc signed, not notarized by Apple${RESET}"
+    return
+  fi
+
   spctl --assess --type execute "$app" 2>/dev/null ||
-    die "Gatekeeper rejected the app (not signed with a Developer ID or not notarized)"
+    die "Gatekeeper rejected the app: this release should be signed with a Developer ID and notarized, but isn't"
 
   # Still the "__…__" placeholder means the release didn't pin a team id.
   case "$EXPECTED_TEAM_ID" in "" | __*__) EXPECTED_TEAM_ID="" ;; esac

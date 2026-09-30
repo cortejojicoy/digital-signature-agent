@@ -13,7 +13,11 @@
 
   Before running anything it checks that:
     1. the installer's SHA-512 matches latest.yml from the same release;
-    2. the installer has a valid Authenticode signature from the expected publisher.
+    2. signed releases only: the installer has a valid Authenticode signature
+       from the expected publisher. Free releases (no paid certificate) are
+       unsigned; a broken signature is always refused.
+  Windows Hello and TPM keys don't depend on code signing, so free builds keep
+  the same hardware protection.
   It installs per user (no administrator rights), registers kukuxsign:// and starts the agent.
 #>
 [CmdletBinding()]
@@ -33,7 +37,11 @@ $ProgressPreference = 'SilentlyContinue' # Invoke-WebRequest is much faster with
 $AppName = 'Kukux Sign Agent'
 $Scheme = 'kukuxsign'
 $DefaultReleases = 'https://github.com/cortejojicoy/digital-signature-agent/releases'
-# Pinned by the release workflow; override with KUKUX_AGENT_PUBLISHER.
+# Set by the release workflow: 'true' for a code-signed release, 'false' for a
+# free one. Left as the placeholder (script from the repository), the
+# installer decides from the file's signature.
+$ReleaseSigned = if ($env:KUKUX_AGENT_RELEASE_SIGNED) { $env:KUKUX_AGENT_RELEASE_SIGNED } else { '__KUKUX_RELEASE_SIGNED__' }
+# Pinned by the release workflow for signed releases; override with KUKUX_AGENT_PUBLISHER.
 $ExpectedPublisher = if ($env:KUKUX_AGENT_PUBLISHER) { $env:KUKUX_AGENT_PUBLISHER } else { '__KUKUX_PUBLISHER__' }
 $AllowUnsignedBuild = $AllowUnsigned.IsPresent -or $env:KUKUX_AGENT_ALLOW_UNSIGNED -eq '1'
 
@@ -99,13 +107,26 @@ function Get-Sha512Base64([string]$Path) {
   return [Convert]::ToBase64String($bytes)
 }
 
+# Returns $true for a free (unsigned) installer, after which the caller
+# removes the downloaded-from-the-internet mark so SmartScreen doesn't block it.
 function Test-InstallerSignature([string]$Path) {
   if ($AllowUnsignedBuild) {
     Write-Warning 'Skipping the signature check (-AllowUnsigned). Only do this for your own builds.'
-    return
+    return $true
   }
   Write-Step 'Verifying signature'
   $sig = Get-AuthenticodeSignature -FilePath $Path
+  $signed = $ReleaseSigned
+  if ($signed -notin @('true', 'false')) { $signed = if ($sig.Status -eq 'NotSigned') { 'false' } else { 'true' } }
+
+  if ($signed -eq 'false') {
+    if ($sig.Status -ne 'NotSigned' -and $sig.Status -ne 'Valid') {
+      Stop-Install "the installer's signature is broken ($($sig.Status)): the download is damaged or was modified"
+    }
+    Write-Host '    free build: SHA-512 verified; not code-signed (no paid certificate)' -ForegroundColor DarkGray
+    return $true
+  }
+
   if ($sig.Status -ne 'Valid') { Stop-Install "the installer's signature is $($sig.Status): $($sig.StatusMessage)" }
   # Still the "__…__" placeholder means the release didn't pin a publisher.
   if ($ExpectedPublisher -notlike '__*__') {
@@ -115,6 +136,7 @@ function Test-InstallerSignature([string]$Path) {
     }
   }
   Write-Host "    signed by $($sig.SignerCertificate.Subject)" -ForegroundColor DarkGray
+  return $false
 }
 
 function Register-Scheme([string]$Exe) {
@@ -192,7 +214,10 @@ function Install-Agent {
       Write-Host '    SHA-512 verified' -ForegroundColor DarkGray
     }
 
-    Test-InstallerSignature $installer
+    $free = Test-InstallerSignature $installer
+    # Verified above; without this a browser-downloaded free installer would
+    # stop at SmartScreen's "Windows protected your PC".
+    if ($free) { Unblock-File -Path $installer -ErrorAction SilentlyContinue }
     Stop-Agent
 
     Write-Step 'Installing (per user, no administrator rights needed)'
