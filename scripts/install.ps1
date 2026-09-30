@@ -3,10 +3,10 @@
   Installs Kukux Sign Agent on Windows (docs/installation.md).
 
 .DESCRIPTION
-  irm https://github.com/kukux/digital-signature-agent/releases/latest/download/install.ps1 | iex
+  irm https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.ps1 | iex
 
   With options:
-  & ([scriptblock]::Create((irm https://github.com/kukux/digital-signature-agent/releases/latest/download/install.ps1))) -Version 1.2.0
+  & ([scriptblock]::Create((irm https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.ps1))) -Version 1.2.0
 
   From a downloaded installer:
   powershell -ExecutionPolicy Bypass -File .\install.ps1 -From .\kukux-sign-agent-1.2.0-win-x64.exe
@@ -32,7 +32,7 @@ $ProgressPreference = 'SilentlyContinue' # Invoke-WebRequest is much faster with
 
 $AppName = 'Kukux Sign Agent'
 $Scheme = 'kukuxsign'
-$DefaultReleases = 'https://github.com/kukux/digital-signature-agent/releases'
+$DefaultReleases = 'https://github.com/cortejojicoy/digital-signature-agent/releases'
 # Pinned by the release workflow; override with KUKUX_AGENT_PUBLISHER.
 $ExpectedPublisher = if ($env:KUKUX_AGENT_PUBLISHER) { $env:KUKUX_AGENT_PUBLISHER } else { '__KUKUX_PUBLISHER__' }
 $AllowUnsignedBuild = $AllowUnsigned.IsPresent -or $env:KUKUX_AGENT_ALLOW_UNSIGNED -eq '1'

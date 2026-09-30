@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Kukux Sign Agent installer for macOS (docs/installation.md).
 #
-#   curl -fsSL https://github.com/kukux/digital-signature-agent/releases/latest/download/install.sh | bash
+#   curl -fsSL https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.sh | bash
 #   curl -fsSL …/install.sh | bash -s -- --version 1.2.0
 #   ./install.sh --from ~/Downloads/kukux-sign-agent-1.2.0-mac-arm64.dmg
 #   ./install.sh --uninstall [--purge]
@@ -16,7 +16,7 @@ set -euo pipefail
 
 APP_NAME="Kukux Sign Agent"
 BUNDLE_ID="com.kukux.signagent"
-DEFAULT_RELEASES="https://github.com/kukux/digital-signature-agent/releases"
+DEFAULT_RELEASES="https://github.com/cortejojicoy/digital-signature-agent/releases"
 # Pinned by the release workflow; override with KUKUX_AGENT_TEAM_ID.
 EXPECTED_TEAM_ID="${KUKUX_AGENT_TEAM_ID:-__KUKUX_TEAM_ID__}"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
