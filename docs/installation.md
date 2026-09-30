@@ -21,7 +21,7 @@ the installer registers the `kukuxsign://` links that the web app uses.
 Open **Terminal** and run:
 
 ```sh
-curl -fsSL https://github.com/kukux/digital-signature-agent/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.sh | bash
 ```
 
 ### Windows
@@ -29,7 +29,7 @@ curl -fsSL https://github.com/kukux/digital-signature-agent/releases/latest/down
 Open **PowerShell** (not as administrator) and run:
 
 ```powershell
-irm https://github.com/kukux/digital-signature-agent/releases/latest/download/install.ps1 | iex
+irm https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.ps1 | iex
 ```
 
 The agent starts once it's installed. Next, pair it:
@@ -71,12 +71,12 @@ form or environment variables.
 
 ```sh
 # macOS: a specific version
-curl -fsSL https://github.com/kukux/digital-signature-agent/releases/latest/download/install.sh | bash -s -- --version 1.2.0
+curl -fsSL https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.sh | bash -s -- --version 1.2.0
 ```
 
 ```powershell
 # Windows: a specific version
-& ([scriptblock]::Create((irm https://github.com/kukux/digital-signature-agent/releases/latest/download/install.ps1))) -Version 1.2.0
+& ([scriptblock]::Create((irm https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.ps1))) -Version 1.2.0
 ```
 
 | macOS (`install.sh`) | Windows (`install.ps1`) | Environment variable | Meaning |
@@ -93,7 +93,7 @@ curl -fsSL https://github.com/kukux/digital-signature-agent/releases/latest/down
 ## Manual install (no terminal)
 
 Download the file for your computer from the
-[latest release](https://github.com/kukux/digital-signature-agent/releases/latest):
+[latest release](https://github.com/cortejojicoy/digital-signature-agent/releases/latest):
 
 | Computer | File |
 |---|---|
@@ -178,11 +178,11 @@ First, unpair: open the agent and click **Unpair**, or revoke the computer in
 the web app under **My signing devices**. Then:
 
 ```sh
-curl -fsSL https://github.com/kukux/digital-signature-agent/releases/latest/download/install.sh | bash -s -- --uninstall --purge
+curl -fsSL https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.sh | bash -s -- --uninstall --purge
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://github.com/kukux/digital-signature-agent/releases/latest/download/install.ps1))) -Uninstall -Purge
+& ([scriptblock]::Create((irm https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.ps1))) -Uninstall -Purge
 ```
 
 `--purge` / `-Purge` also removes the paired-app list and settings. The signing
