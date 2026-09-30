@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Electron's V8 needs JIT under the hardened runtime. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+
+  <!--
+    Secure Enclave keys live in the data-protection keychain, which needs an
+    application identifier, a team identifier and a keychain access group,
+    all matched by build/embedded.provisionprofile (desktop-agent-plan.md §5.5).
+    Replace TEAMID with the Apple Developer team id before a release build.
+  -->
+  <key>com.apple.application-identifier</key>
+  <string>TEAMID.com.kukux.signagent</string>
+  <key>com.apple.developer.team-identifier</key>
+  <string>TEAMID</string>
+  <key>keychain-access-groups</key>
+  <array>
+    <string>TEAMID.com.kukux.signagent</string>
+  </array>
+</dict>
+</plist>
