@@ -1,0 +1,35 @@
+{
+  "configurations": [
+    {
+      "name": "Mac",
+      "includePath": [
+        "${workspaceFolder}/native/include",
+        "${workspaceFolder}/native/src",
+        "${workspaceFolder}/node_modules/node-addon-api",
+        "${env:HOME}/Library/Caches/node-gyp/38.8.6/include/node"
+      ],
+      "defines": ["NAPI_CPP_EXCEPTIONS", "NAPI_VERSION=8"],
+      "macFrameworkPath": ["/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks"],
+      "compilerPath": "/usr/bin/clang++",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "compilerArgs": ["-fobjc-arc", "-mmacosx-version-min=12.0"],
+      "intelliSenseMode": "macos-clang-arm64"
+    },
+    {
+      "name": "Win32",
+      "includePath": [
+        "${workspaceFolder}/native/include",
+        "${workspaceFolder}/native/src",
+        "${workspaceFolder}/node_modules/node-addon-api",
+        "${env:LOCALAPPDATA}/node-gyp/Cache/38.8.6/include/node"
+      ],
+      "defines": ["NAPI_CPP_EXCEPTIONS", "NAPI_VERSION=8", "UNICODE", "_UNICODE", "NOMINMAX", "WIN32_LEAN_AND_MEAN"],
+      "windowsSdkVersion": "10.0.22621.0",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "windows-msvc-x64"
+    }
+  ],
+  "version": 4
+}

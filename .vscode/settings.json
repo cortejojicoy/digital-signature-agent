@@ -1,0 +1,13 @@
+{
+  // The Windows backend (windows.h, C++/WinRT) can't be resolved on macOS, so
+  // IntelliSense skips it here. On a Windows machine, delete this entry and
+  // pick the "Win32" configuration (C/C++: Select a Configuration).
+  "C_Cpp.files.exclude": {
+    "**/native/src/win/**": true,
+    "**/node_modules": true,
+    "**/native/build": true
+  },
+  "files.associations": {
+    "*.mm": "objective-cpp"
+  }
+}
