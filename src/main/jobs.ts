@@ -57,11 +57,12 @@ export class JobRunner {
     const server = this.deps.store.get(link.serverId);
     if (!server) return { result: 'ignored', reason: 'unknown server' };
 
-    const api = this.deps.apiFor(server);
-    const creds = this.deps.credentialsFor(server);
-
     let job: AgentJob;
+    let api: AgentApi;
+    let creds: Credentials;
     try {
+      api = this.deps.apiFor(server);
+      creds = this.deps.credentialsFor(server);
       job = await api.claimJob(creds, link.jobId, link.token);
     } catch (err) {
       if (err instanceof ApiError && err.unauthorized) this.deps.onUnauthorized?.(server);
