@@ -78,7 +78,7 @@ nsis:
 # GitHub Releases serve the installers, latest*.yml (auto-update feed and
 # install-script metadata) and install.sh / install.ps1. To self-host, build
 # with  -c.publish.provider=generic -c.publish.url=https://your.host/agent
-# and upload the same files there (docs/installation.md).
+# and upload the same files there (https://cortejojicoy.github.io/digital-signature-agent/#/rollout).
 publish:
   provider: github
   owner: cortejojicoy
