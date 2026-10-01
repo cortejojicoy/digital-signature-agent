@@ -1,4 +1,4 @@
-// Device-code pairing (desktop-agent-plan.md §8.1, docs/protocol.md).
+// Device-code pairing (desktop-agent-plan.md §8.1; docs: #/how-the-api-works).
 //
 //   lookup(code) → create identity + session keys → sign register_agent proof
 //   (Touch ID / Hello) → claim → poll until the user confirms on the web.

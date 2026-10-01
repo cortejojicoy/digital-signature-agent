@@ -1,4 +1,4 @@
-// HTTPS client for /signature/agent/* (desktop-agent-plan.md §8, docs/protocol.md).
+// HTTPS client for /signature/agent/* (desktop-agent-plan.md §8; docs: #/how-the-api-works).
 //
 // Every request goes to the one origin the client was built for; redirects
 // are refused, so a compromised path can't bounce the agent elsewhere.
