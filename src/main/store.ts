@@ -130,7 +130,7 @@ export class Store {
   }
 }
 
-async function readJson<T>(file: string): Promise<T | null> {
+export async function readJson<T>(file: string): Promise<T | null> {
   try {
     return JSON.parse(await fs.readFile(file, 'utf8')) as T;
   } catch {
@@ -138,7 +138,7 @@ async function readJson<T>(file: string): Promise<T | null> {
   }
 }
 
-async function writeJsonAtomic(file: string, data: unknown): Promise<void> {
+export async function writeJsonAtomic(file: string, data: unknown): Promise<void> {
   const tmp = `${file}.${process.pid}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   await fs.rename(tmp, file);
