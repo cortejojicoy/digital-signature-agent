@@ -7,7 +7,7 @@ web app, and proves on each signing that *this* machine was used, with Touch
 ID or Windows Hello enforced by the key itself.
 
 Design: [desktop-agent-plan.md](desktop-agent-plan.md). Wire contract for the
-server: [docs/protocol.md](docs/protocol.md). Docs and full API reference:
+server: [How the API works](https://cortejojicoy.github.io/digital-signature-agent/#/how-the-api-works). Docs and full API reference:
 [cortejojicoy.github.io/digital-signature-agent](https://cortejojicoy.github.io/digital-signature-agent/)
 (source in [docs/](docs/), deployed by [.github/workflows/pages.yml](.github/workflows/pages.yml)).
 
@@ -27,7 +27,7 @@ The installers verify the download's SHA-512 and code signature, install for
 the current user, register `kukuxsign://`, and start the agent. Releases are
 **free builds** by default: no paid Apple or Windows signing, with keys still in
 the Secure Enclave / TPM. See
-[docs/installation.md](docs/installation.md#free-and-signed-builds) for what
+[Installation](https://cortejojicoy.github.io/digital-signature-agent/#/installation/free-and-signed) for what
 that means, plus manual installs, MDM rollout, self-hosted downloads and
 uninstalling.
 
@@ -38,7 +38,7 @@ uninstalling.
 | 0: spikes | 0a is solved without a paid account: the Secure Enclave works from free, ad-hoc signed builds via CryptoKit (tested on real hardware, including the password prompt). A signed build's keychain route is still untested. 0b (Hello prompt parenting) needs Windows hardware. |
 | 1: native module | Done. macOS is built and tested on hardware. Windows compiles and passes its tests on CI (software backend); Hello and TPM still need real hardware. |
 | 2: Electron shell | Done. Pairs with and signs against the local mock server. |
-| 3–4: package | Not in this repo. Implement [docs/protocol.md](docs/protocol.md) in `kukux/digital-signature`. |
+| 3–4: package | Not in this repo. Implement [Server integration](https://cortejojicoy.github.io/digital-signature-agent/#/server-integration) in `kukux/digital-signature`. |
 | 5: distribution | Free releases work with no secrets. Paid signing switches on per platform when its secrets are added. The free package and both install scripts are tested (macOS locally, both on CI). |
 
 How macOS keys are stored depends on the build:
