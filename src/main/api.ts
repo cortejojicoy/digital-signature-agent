@@ -212,10 +212,13 @@ export class AgentApi {
 
     if (!response.ok) {
       const error = (data as { error?: { code?: string; message?: string } } | null)?.error ?? {};
+      const code = error.code ?? `http_${response.status}`;
+      let message = error.message ?? `request failed with HTTP ${response.status}`;
+      if (code === 'stale_request') message += " Check this computer's clock.";
       throw new ApiError(
         response.status,
-        error.code ?? `http_${response.status}`,
-        error.message ?? `request failed with HTTP ${response.status}`,
+        code,
+        message,
         (data as Record<string, unknown>) ?? {},
       );
     }
