@@ -311,3 +311,204 @@ input:focus-visible {
     animation: none;
   }
 }
+
+/* ── Icon buttons with a hover / focus label ── */
+
+.button-row {
+  display: flex;
+  gap: 6px;
+}
+
+.icon-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.icon-button-primary {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.icon-button-quiet {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.icon-button-quiet:hover:not(:disabled) {
+  background: var(--bg);
+}
+
+.icon-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Right-aligned so labels on buttons at the window's right edge stay inside it. */
+.icon-button[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 10;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+}
+
+.icon-button[data-tip-pos='above']::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+  transform: translateY(2px);
+}
+
+.icon-button:hover::after,
+.icon-button:focus-visible::after {
+  opacity: 1;
+  transform: none;
+}
+
+.is-spinning svg {
+  animation: spin 0.9s linear infinite;
+}
+
+.button-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.badge-inline {
+  margin-left: 6px;
+  vertical-align: 1px;
+  font-size: 11px;
+  padding: 1px 6px;
+}
+
+/* ── Updates ── */
+
+.release p {
+  margin: 0;
+}
+
+.release {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.release-notes {
+  white-space: pre-wrap;
+  color: var(--muted);
+  max-height: 96px;
+  overflow-y: auto;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--border);
+}
+
+.progress-bar::-webkit-progress-bar {
+  background: var(--border);
+}
+
+.progress-bar::-webkit-progress-value {
+  background: var(--accent);
+}
+
+/* ── Developer mode switch ── */
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.toggle-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toggle-title {
+  font-weight: 600;
+}
+
+.switch {
+  appearance: none;
+  flex-shrink: 0;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border-radius: 999px;
+  border: 0;
+  background: var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.switch:checked {
+  background: var(--weak-text);
+}
+
+.switch:checked::after {
+  transform: translateX(16px);
+}
+
+.switch:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning svg {
+    animation: none;
+  }
+}
