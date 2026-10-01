@@ -162,7 +162,10 @@ function validateLookup(lookup: PairingLookup, origin: string): void {
   }
   // The server must describe itself with the origin we're talking to.
   if (s.origin !== origin) {
-    throw new PairingError('origin_mismatch', `The server identified itself as ${s.origin}, not ${origin}.`);
+    throw new PairingError(
+      'origin_mismatch',
+      `The server's address is ${s.origin}, not ${origin}. Use that address or fix APP_URL.`,
+    );
   }
   if (typeof lookup.pairing !== 'string' || typeof lookup.nonce !== 'string' || lookup.user_id == null) {
     throw new PairingError('invalid_response', 'The server sent an invalid pairing response.');
