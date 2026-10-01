@@ -71,19 +71,36 @@ interface IconButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 
   variant?: 'primary' | 'quiet';
   /** Where the hover label appears: below by default, above for bottom-row buttons. */
   tip?: 'below' | 'above';
+  /** Label edge aligned with the button: `end` for right-side buttons, `start` for left-side ones. */
+  tipAlign?: 'end' | 'start';
+  /** `small`: a borderless inline icon, e.g. next to text. */
+  size?: 'normal' | 'small';
 }
 
-export function IconButton({ icon, label, variant = 'quiet', tip = 'below', className = '', type = 'button', ...rest }: IconButtonProps) {
+export function IconButton({
+  icon,
+  label,
+  variant = 'quiet',
+  tip = 'below',
+  tipAlign = 'end',
+  size = 'normal',
+  className = '',
+  type = 'button',
+  ...rest
+}: IconButtonProps) {
   return (
     <button
       type={type}
-      className={`icon-button icon-button-${variant} ${className}`.trim()}
+      className={`icon-button icon-button-${variant} ${size === 'small' ? 'icon-button-small' : ''} ${className}`
+        .replace(/\s+/g, ' ')
+        .trim()}
       aria-label={label}
       data-tip={label}
       data-tip-pos={tip}
+      data-tip-align={tipAlign}
       {...rest}
     >
-      <Icon name={icon} />
+      <Icon name={icon} size={size === 'small' ? 15 : 18} />
     </button>
   );
 }

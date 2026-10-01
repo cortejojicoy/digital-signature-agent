@@ -408,43 +408,38 @@ input:focus-visible {
   padding: 1px 6px;
 }
 
-/* ── Updates ── */
+/* ── Version line with the update icon ── */
 
-.release p {
-  margin: 0;
-}
-
-.release {
+.version-row {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 6px;
+  margin-top: 2px;
 }
 
-.release-notes {
-  white-space: pre-wrap;
+.accent {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.icon-button-small {
+  width: 26px;
+  height: 26px;
+  border-color: transparent;
   color: var(--muted);
-  max-height: 96px;
-  overflow-y: auto;
-  -webkit-user-select: text;
-  user-select: text;
 }
 
-.progress-bar {
-  width: 100%;
-  height: 6px;
-  appearance: none;
-  border: 0;
-  border-radius: 999px;
-  overflow: hidden;
-  background: var(--border);
+.icon-button-small:hover:not(:disabled) {
+  color: var(--text);
 }
 
-.progress-bar::-webkit-progress-bar {
-  background: var(--border);
+.icon-button-small.is-accent {
+  color: var(--accent);
 }
 
-.progress-bar::-webkit-progress-value {
-  background: var(--accent);
+.icon-button[data-tip-align='start']::after {
+  right: auto;
+  left: 0;
 }
 
 /* ── Developer mode switch ── */
