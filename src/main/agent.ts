@@ -32,12 +32,15 @@ export interface ServerSummary {
   protection: PairedServer['protection'];
   userPresence: boolean;
   pairedAt: string;
+  insecure: boolean;
 }
 
 export class Agent {
   readonly jobs: JobRunner;
+  private localNetwork: boolean;
 
   constructor(private readonly options: AgentOptions) {
+    this.localNetwork = options.allowInsecureLocalNetwork === true;
     this.jobs = new JobRunner({
       keystore: options.keystore,
       store: options.store,
@@ -49,12 +52,24 @@ export class Agent {
     });
   }
 
+  /** Developer mode: plain http:// to local-network apps (protocol.ts). */
+  setAllowInsecureLocalNetwork(on: boolean): void {
+    this.localNetwork = on;
+  }
+
+  private get policy(): OriginPolicy {
+    return { allowInsecureLocalNetwork: this.localNetwork };
+  }
+
   apiFor(origin: string): AgentApi {
+    if (origin.startsWith('http:') && !this.localNetwork) {
+      throw new Error(`${origin} uses plain HTTP. Turn on Developer mode to use it.`);
+    }
     return new AgentApi({
       origin,
       agentVersion: this.options.agentVersion,
       fetch: this.options.fetch,
-      allowInsecureLocalhost: this.options.allowInsecureLocalhost,
+      ...this.policy,
     });
   }
 
@@ -82,14 +97,21 @@ export class Agent {
       protection: s.protection,
       userPresence: s.userPresence,
       pairedAt: s.pairedAt,
+      insecure: s.origin.startsWith('http:'),
     }));
   }
 
   async pair(originInput: string, codeInput: string, opts: PairOptions = {}): Promise<PairedServer> {
-    const origin = normalizeOrigin(originInput, this.options);
-    if (!origin) throw new Error('Enter the HTTPS address of the app, for example https://sign.example.gov.ph');
+    const origin = normalizeOrigin(originInput, this.policy);
+    if (!origin) {
+      throw new Error(
+        this.localNetwork
+          ? 'Enter an HTTPS or local network address, e.g. http://192.168.1.20:8000'
+          : 'Enter an HTTPS address, e.g. https://sign.example.gov.ph',
+      );
+    }
     const code = normalizeUserCode(codeInput);
-    if (!code) throw new Error('Enter the 8-character code shown on the web, for example K7QM-2XPD');
+    if (!code) throw new Error('Enter the 8-character code, e.g. K7QM-2XPD');
 
     const paired = await pair(
       {
@@ -109,7 +131,7 @@ export class Agent {
 
   /** Entry point for every kukuxsign:// link. Unknown shapes are dropped. */
   async handleLink(raw: string): Promise<JobOutcome | null> {
-    const link = parseLink(raw, this.options);
+    const link = parseLink(raw, this.policy);
     if (!link) return null;
     if (link.kind === 'pair') {
       this.options.onPairLink?.(link);
