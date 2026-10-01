@@ -11,9 +11,8 @@ export const sections = [
     id: 'http',
     title: 'Server HTTP API',
     intro:
-      'Endpoints the agent calls on the `kukux/digital-signature` server, all under `<origin>/signature/agent`, over HTTPS, as JSON. ' +
-      'Every request sends `X-Agent-Version`. Redirects are refused. Errors are `{"error":{"code","message"}}` with a 4xx status. ' +
-      'The full wire contract is in the [Protocol guide](#/guide/protocol).',
+      'Endpoints the agent calls under `<origin>/signature/agent`, as JSON. Every request sends `X-Agent-Version`; redirects are refused; ' +
+      'errors are `{"error":{"code","message"}}`. Overview: [How the API works](#/how-the-api-works).',
     groups: [
       {
         title: 'Pairing (unauthenticated)',
@@ -252,10 +251,10 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             signature: 'kukuxsign://pair?o=<urlencoded origin>&c=<user_code>',
             summary: 'Prefills the pairing form. The user still sees the origin and clicks Pair.',
             params: [
-              { name: 'o', type: 'origin', desc: 'HTTPS origin only (plain `http://localhost` only in unpackaged builds). No path, query, credentials or fragment.' },
+              { name: 'o', type: 'origin', desc: 'HTTPS origin; plain `http://` only for local-network hosts in Developer mode. No path, query, credentials or fragment.' },
               { name: 'c', type: 'user code', desc: '8 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, with or without the dash.' },
             ],
-            source: 'src/main/protocol.ts#L59',
+            source: 'src/main/protocol.ts#L63',
           },
           {
             id: 'link-job',
@@ -269,7 +268,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
               { name: 's', type: 'server id', desc: '`[A-Za-z0-9_-]{1,64}`: the `server.id` from pairing lookup.' },
             ],
             notes: ['Extra parameters, repeated parameters, a port, credentials or a fragment all make the link invalid.'],
-            source: 'src/main/protocol.ts#L50',
+            source: 'src/main/protocol.ts#L54',
           },
         ],
       },
@@ -380,14 +379,14 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
               { name: 'fetch?', type: 'FetchLike', desc: 'Override for tests.' },
               { name: 'biometryOnly?', type: 'boolean', desc: 'macOS: require biometrics for identity keys.' },
               { name: 'pollIntervalMs?', type: 'number', desc: 'Pairing poll interval (default 2000).' },
-              { name: 'allowInsecureLocalhost?', type: 'boolean', desc: 'Accept `http://localhost` origins (development only).' },
+              { name: 'allowInsecureLocalNetwork?', type: 'boolean', desc: 'Developer mode: accept plain `http://` for local-network hosts. Change later with `setAllowInsecureLocalNetwork`.' },
               { name: 'confirm', type: '(req: ConfirmRequest) => Promise<boolean>', desc: 'Shows the confirm window. UX only: the OS prompt is the security boundary.' },
               { name: 'parentWindow?', type: '() => Buffer | undefined', desc: 'Native handle to parent the OS prompt to (HWND on Windows).' },
               { name: 'onPairLink?', type: '(link: PairLink) => void', desc: 'A pair link arrived; prefill the UI.' },
               { name: 'onJobOutcome?', type: '(o: JobOutcome) => void', desc: 'A job finished.' },
               { name: 'onServersChanged?', type: '() => void', desc: 'Pairings were added or removed.' },
             ],
-            source: 'src/main/agent.ts#L37',
+            source: 'src/main/agent.ts#L38',
           },
           {
             id: 'agent-pair',
@@ -400,7 +399,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
   onProgress: (p) => console.log(p.stage),
   signal: AbortSignal.timeout(10 * 60_000),
 });`,
-            source: 'src/main/agent.ts#L88',
+            source: 'src/main/agent.ts#L104',
           },
           {
             id: 'agent-handlelink',
@@ -408,7 +407,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             name: 'Agent.handleLink',
             signature: 'agent.handleLink(raw: string): Promise<JobOutcome | null>',
             summary: 'Entry point for every `kukuxsign://` link. A pair link calls `onPairLink` and returns `null`. A job link runs through `JobRunner` and returns its outcome. Unknown shapes return `null`.',
-            source: 'src/main/agent.ts#L111',
+            source: 'src/main/agent.ts#L133',
           },
           {
             id: 'agent-unpair',
@@ -416,7 +415,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             name: 'Agent.unpair',
             signature: 'agent.unpair(serverId: string): Promise<void>',
             summary: 'Revokes the token on the server (best effort; failures are ignored), then deletes the local keys and pairing.',
-            source: 'src/main/agent.ts#L124',
+            source: 'src/main/agent.ts#L146',
           },
           {
             id: 'agent-servers',
@@ -424,7 +423,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             name: 'Agent.servers',
             signature: 'agent.servers(): ServerSummary[]',
             summary: 'Paired servers without secrets or key ids: `id, name, origin, userName, deviceLabel, protection, userPresence, pairedAt`.',
-            source: 'src/main/agent.ts#L75',
+            source: 'src/main/agent.ts#L90',
           },
           {
             id: 'agent-capabilities',
@@ -432,15 +431,23 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             name: 'Agent.capabilities',
             signature: 'agent.capabilities(): Promise<Capabilities>',
             summary: 'Forwards `keystore.capabilities()`.',
-            source: 'src/main/agent.ts#L71',
+            source: 'src/main/agent.ts#L86',
+          },
+          {
+            id: 'agent-setallowinsecurelocalnetwork',
+            kind: 'method',
+            name: 'Agent.setAllowInsecureLocalNetwork',
+            signature: 'agent.setAllowInsecureLocalNetwork(on: boolean): void',
+            summary: 'Turns Developer mode on or off without a restart. While off, pairings over `http://` fail with a message to turn it on.',
+            source: 'src/main/agent.ts#L56',
           },
           {
             id: 'agent-apifor',
             kind: 'method',
             name: 'Agent.apiFor',
             signature: 'agent.apiFor(origin: string): AgentApi',
-            summary: 'Builds an `AgentApi` pinned to `origin`, with this agent’s version, fetch and origin policy.',
-            source: 'src/main/agent.ts#L52',
+            summary: 'Builds an `AgentApi` pinned to `origin`. Throws for an `http://` origin while Developer mode is off.',
+            source: 'src/main/agent.ts#L64',
           },
           {
             id: 'agent-credentialsfor',
@@ -449,7 +456,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             signature: 'agent.credentialsFor(server: PairedServer): Credentials',
             summary: 'Bundles the stored token, user id and a session-key signer for authenticated calls.',
             throws: '`Error` if no token is stored for the server.',
-            source: 'src/main/agent.ts#L61',
+            source: 'src/main/agent.ts#L76',
           },
         ],
       },
@@ -469,7 +476,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
               { name: 'fetch?', type: 'FetchLike', desc: 'Defaults to global `fetch`.' },
               { name: 'timeoutMs?', type: 'number', desc: 'Default 15000.' },
               { name: 'now?', type: '() => number', desc: 'Clock for tests.' },
-              { name: 'allowInsecureLocalhost?', type: 'boolean', desc: 'See `OriginPolicy`.' },
+              { name: 'allowInsecureLocalNetwork?', type: 'boolean', desc: 'See `OriginPolicy`.' },
             ],
             throws: '`Error` if the origin is refused.',
             source: 'src/main/api.ts#L114',
@@ -552,7 +559,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             name: 'deleteKeys',
             signature: 'deleteKeys(keystore: KeyStore, keyIds: string[]): Promise<void>',
             summary: 'Deletes each key, ignoring errors (for example, keys that are already gone).',
-            source: 'src/main/pairing.ts#L198',
+            source: 'src/main/pairing.ts#L201',
           },
           {
             id: 'pairingprogress',
@@ -619,7 +626,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
               '`document.title` and `signer.name` must be non-empty and at most 300 characters.',
               'The canonical message must build (valid nonce and payload hash).',
             ],
-            source: 'src/main/jobs.ts#L109',
+            source: 'src/main/jobs.ts#L110',
           },
         ],
       },
@@ -634,7 +641,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             summary: 'Parses a `kukuxsign://` link into a `JobLink` or `PairLink`. Anything that doesn’t match exactly (including links over 2048 characters) returns `null`.',
             example: `parseLink('kukuxsign://pair?o=https%3A%2F%2Fsign.example.gov.ph&c=k7qm2xpd');
 // → { kind: 'pair', origin: 'https://sign.example.gov.ph', code: 'K7QM-2XPD' }`,
-            source: 'src/main/protocol.ts#L36',
+            source: 'src/main/protocol.ts#L40',
           },
           {
             id: 'normalizeusercode',
@@ -642,7 +649,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             name: 'normalizeUserCode',
             signature: 'normalizeUserCode(input: string): string | null',
             summary: 'Returns `"XXXX-XXXX"` or `null`. Accepts lower case, spaces and a missing dash. The alphabet excludes 0/O and 1/I/L.',
-            source: 'src/main/protocol.ts#L76',
+            source: 'src/main/protocol.ts#L80',
           },
           {
             id: 'normalizeorigin',
@@ -650,8 +657,16 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             name: 'normalizeOrigin',
             signature: 'normalizeOrigin(input: string, policy?: OriginPolicy): string | null',
             summary:
-              'Returns the bare origin (`scheme://host[:port]`) or `null`. HTTPS only, except `http://localhost` / `http://127.0.0.1` when `allowInsecureLocalhost` is set. Paths, credentials, queries and fragments are rejected, not silently dropped.',
-            source: 'src/main/protocol.ts#L87',
+              'Returns the bare origin (`scheme://host[:port]`) or `null`. HTTPS only, except local-network hosts when `allowInsecureLocalNetwork` is set. Paths, credentials, queries and fragments are rejected.',
+            source: 'src/main/protocol.ts#L91',
+          },
+          {
+            id: 'islocalnetworkhost',
+            kind: 'function',
+            name: 'isLocalNetworkHost',
+            signature: 'isLocalNetworkHost(hostname: string): boolean',
+            summary: 'Loopback, private (RFC 1918), link-local and IPv6 unique-local addresses, plus `*.local`, `*.test` and `*.localhost` names.',
+            source: 'src/main/protocol.ts#L114',
           },
           {
             id: 'linkfromargv',
@@ -659,7 +674,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             name: 'linkFromArgv',
             signature: 'linkFromArgv(argv: string[]): string | null',
             summary: 'Finds a `kukuxsign://` link in process argv (Windows first launch and second instance).',
-            source: 'src/main/protocol.ts#L103',
+            source: 'src/main/protocol.ts#L132',
           },
           {
             id: 'scheme',
@@ -790,8 +805,12 @@ catch (err) { if (isKeyStoreError(err, 'E_CANCELLED')) { /* user dismissed the p
       {
         title: 'Shell helpers',
         items: [
-          { id: 'startupdater', kind: 'function', name: 'startUpdater', signature: 'startUpdater(): void', summary: 'Packaged builds only. Checks at startup and every six hours. Free macOS builds only announce updates (a notification opens the release page); other builds download and install in the background.', source: 'src/main/updater.ts#L21' },
-          { id: 'checkforupdates', kind: 'function', name: 'checkForUpdates', signature: 'checkForUpdates(): Promise<void>', summary: 'One update check. Also called when a server answers 426. Errors (offline, no feed) are ignored.', source: 'src/main/updater.ts#L46' },
+          { id: 'startupdater', kind: 'function', name: 'startUpdater', signature: 'startUpdater(onChange: (status: UpdateView) => void): void', summary: 'Packaged builds check at startup and every six hours. Signed and Windows builds download in the background; free macOS builds announce the release.', source: 'src/main/updater.ts#L41' },
+          { id: 'checkforupdates', kind: 'function', name: 'checkForUpdates', signature: 'checkForUpdates(opts?: { background?: boolean }): Promise<void>', summary: 'Reads the latest GitHub release. Background checks (and a server 426) stay quiet on errors; manual checks report them.', source: 'src/main/updater.ts#L70' },
+          { id: 'installupdate', kind: 'function', name: 'installUpdate', signature: 'installUpdate(): Promise<void>', summary: 'Downloads via electron-updater, restarts to install, or opens the release page.', source: 'src/main/updater.ts#L99' },
+          { id: 'fetchlatestrelease', kind: 'function', name: 'fetchLatestRelease', signature: 'fetchLatestRelease(fetch: FetchLike): Promise<ReleaseInfo>', summary: 'GitHub Releases API → `{ version, name, notes, url, publishedAt }`. Links outside this repository fall back to the releases page.', source: 'src/main/release.ts#L17' },
+          { id: 'compareversions', kind: 'function', name: 'compareVersions', signature: 'compareVersions(a: string, b: string): number', summary: 'Numeric `x.y.z` comparison; pre-release suffixes are ignored.', source: 'src/main/release.ts#L58' },
+          { id: 'settingsstore', kind: 'class', name: 'SettingsStore', signature: 'new SettingsStore(dir: string)', summary: '`settings.json` in userData: `{ developerMode }`. `load()`, `get()`, `update(patch)`.', source: 'src/main/settings.ts#L14' },
           { id: 'registerappscheme', kind: 'function', name: 'registerAppScheme', signature: 'registerAppScheme(): void', summary: 'Registers the privileged `app://` scheme. Must run before app `ready`.', source: 'src/main/app-protocol.ts#L29' },
           { id: 'handleappscheme', kind: 'function', name: 'handleAppScheme', signature: 'handleAppScheme(rendererDir: string): void', summary: 'Serves the bundled UI from `app://agent/`, GET only, confined to `rendererDir`, with a strict CSP sent as a response header.', source: 'src/main/app-protocol.ts#L33' },
           { id: 'appurl', kind: 'function', name: 'appUrl', signature: 'appUrl(hash: string): string', summary: 'Returns `app://agent/index.html#<hash>`.', source: 'src/main/app-protocol.ts#L59' },
@@ -950,27 +969,38 @@ catch (err) { if (isKeyStoreError(err, 'E_CANCELLED')) { /* user dismissed the p
         items: [
           { id: 'ipc-getstatus', kind: 'ipc', name: 'getStatus', channel: 'agent:get-status', signature: 'window.agent.getStatus(): Promise<StatusView>', summary: 'Version, platform, capabilities and paired servers.', returns: `{ version: string; platform: 'macos' | 'windows' | 'other';
   capabilities: { hardware; userPresence; attestation };
-  servers: ServerView[] }`, source: 'src/shared/ipc.ts#L67' },
-          { id: 'ipc-startpairing', kind: 'ipc', name: 'startPairing', channel: 'agent:start-pairing', signature: 'window.agent.startPairing({ origin, code }): Promise<PairingResult>', summary: 'Runs `Agent.pair`. Starting a new pairing aborts one in progress. Never throws: errors come back as `{ ok: false, error }`.', returns: '`{ ok: true; serverName } | { ok: false; error }`', source: 'src/shared/ipc.ts#L68' },
-          { id: 'ipc-cancelpairing', kind: 'ipc', name: 'cancelPairing', channel: 'agent:cancel-pairing', signature: 'window.agent.cancelPairing(): Promise<void>', summary: 'Aborts the pairing in progress.', source: 'src/shared/ipc.ts#L69' },
+  servers: ServerView[];               // each has insecure: boolean (paired over http://)
+  developerMode: { on; locked } }`, source: 'src/shared/ipc.ts#L94' },
+          { id: 'ipc-startpairing', kind: 'ipc', name: 'startPairing', channel: 'agent:start-pairing', signature: 'window.agent.startPairing({ origin, code }): Promise<PairingResult>', summary: 'Runs `Agent.pair`. Starting a new pairing aborts one in progress. Never throws: errors come back as `{ ok: false, error }`.', returns: '`{ ok: true; serverName } | { ok: false; error }`', source: 'src/shared/ipc.ts#L95' },
+          { id: 'ipc-cancelpairing', kind: 'ipc', name: 'cancelPairing', channel: 'agent:cancel-pairing', signature: 'window.agent.cancelPairing(): Promise<void>', summary: 'Aborts the pairing in progress.', source: 'src/shared/ipc.ts#L96' },
           { id: 'ipc-getjob', kind: 'ipc', name: 'getJob', channel: 'agent:get-job', signature: 'window.agent.getJob(id: string): Promise<JobView | null>', summary: 'The job waiting in the confirm window, or `null`.', returns: `{ id; serverName; origin; documentTitle; signerName; purpose;
-  expiresAt; protection; userPresence }`, source: 'src/shared/ipc.ts#L70' },
-          { id: 'ipc-approvejob', kind: 'ipc', name: 'approveJob', channel: 'agent:approve-job', signature: 'window.agent.approveJob(id: string): Promise<void>', summary: 'Approve in the confirm window. The OS prompt follows; it is the real security boundary.', source: 'src/shared/ipc.ts#L71' },
-          { id: 'ipc-rejectjob', kind: 'ipc', name: 'rejectJob', channel: 'agent:reject-job', signature: 'window.agent.rejectJob(id: string): Promise<void>', summary: 'Decline in the confirm window. The server is told `declined`.', source: 'src/shared/ipc.ts#L72' },
-          { id: 'ipc-unpair', kind: 'ipc', name: 'unpair', channel: 'agent:unpair', signature: 'window.agent.unpair(serverId: string): Promise<void>', summary: 'Runs `Agent.unpair`.', source: 'src/shared/ipc.ts#L73' },
+  expiresAt; protection; userPresence }`, source: 'src/shared/ipc.ts#L97' },
+          { id: 'ipc-approvejob', kind: 'ipc', name: 'approveJob', channel: 'agent:approve-job', signature: 'window.agent.approveJob(id: string): Promise<void>', summary: 'Approve in the confirm window. The OS prompt follows; it is the real security boundary.', source: 'src/shared/ipc.ts#L98' },
+          { id: 'ipc-rejectjob', kind: 'ipc', name: 'rejectJob', channel: 'agent:reject-job', signature: 'window.agent.rejectJob(id: string): Promise<void>', summary: 'Decline in the confirm window. The server is told `declined`.', source: 'src/shared/ipc.ts#L99' },
+          { id: 'ipc-unpair', kind: 'ipc', name: 'unpair', channel: 'agent:unpair', signature: 'window.agent.unpair(serverId: string): Promise<void>', summary: 'Runs `Agent.unpair`.', source: 'src/shared/ipc.ts#L100' },
+          { id: 'ipc-setdevelopermode', kind: 'ipc', name: 'setDeveloperMode', channel: 'agent:set-developer-mode', signature: 'window.agent.setDeveloperMode(on: boolean): Promise<void>', summary: 'Turning it on asks for confirmation in a native dialog first. No effect under `npm run dev`, where it is always on.', source: 'src/shared/ipc.ts#L101' },
+          { id: 'ipc-getupdate', kind: 'ipc', name: 'getUpdate', channel: 'agent:get-update', signature: 'window.agent.getUpdate(): Promise<UpdateView>', summary: 'The current update state.', returns: `| { state: 'idle' | 'checking' }
+| { state: 'up_to_date'; checkedAt }
+| { state: 'available'; release; install: 'download' | 'open_page' }
+| { state: 'downloading'; release; percent }
+| { state: 'ready'; release }
+| { state: 'error'; message }`, source: 'src/shared/ipc.ts#L102' },
+          { id: 'ipc-checkforupdates', kind: 'ipc', name: 'checkForUpdates', channel: 'agent:check-for-updates', signature: 'window.agent.checkForUpdates(): Promise<void>', summary: 'Checks the latest GitHub release now. Progress arrives through `onUpdateChanged`.', source: 'src/shared/ipc.ts#L103' },
+          { id: 'ipc-installupdate', kind: 'ipc', name: 'installUpdate', channel: 'agent:install-update', signature: 'window.agent.installUpdate(): Promise<void>', summary: 'Downloads, restarts to install, or opens the release page, depending on the state.', source: 'src/shared/ipc.ts#L105' },
         ],
       },
       {
         title: 'Events (main → renderer)',
         intro: 'Each `on…` returns an unsubscribe function.',
         items: [
-          { id: 'ipc-onstatuschanged', kind: 'event', name: 'onStatusChanged', channel: 'agent:status-changed', signature: 'window.agent.onStatusChanged(cb: () => void): () => void', summary: 'Pairings changed; call `getStatus()` again.', source: 'src/shared/ipc.ts#L74' },
-          { id: 'ipc-onpairingprogress', kind: 'event', name: 'onPairingProgress', channel: 'agent:pairing-progress', signature: 'window.agent.onPairingProgress(cb: (p: PairingProgressView) => void): () => void', summary: 'Stages `looking_up`, `creating_keys`, `awaiting_confirmation`, `paired`.', source: 'src/shared/ipc.ts#L75' },
-          { id: 'ipc-onpairprefill', kind: 'event', name: 'onPairPrefill', channel: 'agent:pair-prefill', signature: 'window.agent.onPairPrefill(cb: (p: { origin; code }) => void): () => void', summary: 'A pair link was opened; prefill the form.', source: 'src/shared/ipc.ts#L76' },
+          { id: 'ipc-onstatuschanged', kind: 'event', name: 'onStatusChanged', channel: 'agent:status-changed', signature: 'window.agent.onStatusChanged(cb: () => void): () => void', summary: 'Pairings changed; call `getStatus()` again.', source: 'src/shared/ipc.ts#L106' },
+          { id: 'ipc-onpairingprogress', kind: 'event', name: 'onPairingProgress', channel: 'agent:pairing-progress', signature: 'window.agent.onPairingProgress(cb: (p: PairingProgressView) => void): () => void', summary: 'Stages `looking_up`, `creating_keys`, `awaiting_confirmation`, `paired`.', source: 'src/shared/ipc.ts#L107' },
+          { id: 'ipc-onpairprefill', kind: 'event', name: 'onPairPrefill', channel: 'agent:pair-prefill', signature: 'window.agent.onPairPrefill(cb: (p: { origin; code }) => void): () => void', summary: 'A pair link was opened; prefill the form.', source: 'src/shared/ipc.ts#L108' },
           { id: 'ipc-onjobstate', kind: 'event', name: 'onJobState', channel: 'agent:job-state', signature: 'window.agent.onJobState(cb: (s: JobState & { id }) => void): () => void', summary: 'Confirm-window updates for a job.', returns: `| { state: 'waiting_for_os_prompt' }
 | { state: 'completed' }
 | { state: 'rejected'; reason }
-| { state: 'failed'; error }`, source: 'src/shared/ipc.ts#L77' },
+| { state: 'failed'; error }`, source: 'src/shared/ipc.ts#L109' },
+          { id: 'ipc-onupdatechanged', kind: 'event', name: 'onUpdateChanged', channel: 'agent:update-changed', signature: 'window.agent.onUpdateChanged(cb: (u: UpdateView) => void): () => void', summary: 'The update state changed.', source: 'src/shared/ipc.ts#L110' },
         ],
       },
     ],
@@ -989,7 +1019,7 @@ catch (err) { if (isKeyStoreError(err, 'E_CANCELLED')) { /* user dismissed the p
             id: 'env-vars',
             kind: 'constant',
             name: 'Runtime and build switches',
-            summary: 'Installer options are listed in the [Installation guide](#/guide/installation).',
+            summary: 'Installer options are in [Installation](#/installation/options).',
             table: [
               ['KUKUX_KEYSTORE_BACKEND=software', 'Force software keys (CI runners have no Secure Enclave, TPM or Hello).'],
               ['KUKUX_KEYSTORE_DEBUG=1', 'Log why hardware key creation fell back (macOS).'],
@@ -1003,9 +1033,4 @@ catch (err) { if (isKeyStoreError(err, 'E_CANCELLED')) { /* user dismissed the p
       },
     ],
   },
-];
-
-export const guides = [
-  { id: 'installation', title: 'Installation', file: 'installation.md' },
-  { id: 'protocol', title: 'Protocol (v1)', file: 'protocol.md' },
 ];
