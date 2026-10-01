@@ -207,15 +207,20 @@ the web app's *"Don't have the agent? Download"* link goes there too.
 ## Updating
 
 The agent checks for updates at startup and every six hours. If the web app
-requires a newer version, it checks straight away.
+requires a newer version, it checks straight away. To check yourself, click
+the refresh icon under **Updates** in the agent window, or choose **Check for
+updates** from the tray menu. The agent shows the new version and its release
+notes.
 
-- **Signed builds** update themselves in the background, and verify each
-  update's signature before installing it.
+- **Signed builds** download updates in the background, and verify each
+  update's signature before installing it. Click **Restart to update**, or
+  the update installs the next time the agent quits.
 - **Free builds on Windows** update themselves too, and verify each update
   against the SHA-512 in `latest.yml` over HTTPS.
 - **Free builds on macOS** can't replace themselves (macOS only lets signed
-  apps do that). The agent shows a notification; click it and re-run the
-  one-line installer. Your pairings and keys are kept.
+  apps do that). The agent shows a notification and an **Open download page**
+  button; re-run the one-line installer from there. Your pairings and keys are
+  kept.
 
 ## Uninstalling
 
