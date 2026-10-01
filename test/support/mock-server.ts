@@ -1,4 +1,5 @@
-// In-memory implementation of the server side of docs/protocol.md.
+// In-memory implementation of the server side of the agent API
+// (https://cortejojicoy.github.io/digital-signature-agent/#/how-the-api-works).
 //
 // Used by the integration tests, and runnable on its own as the "local test
 // server" for trying the real Electron app (npm run mock-server). It is also
