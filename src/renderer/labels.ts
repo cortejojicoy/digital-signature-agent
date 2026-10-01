@@ -7,12 +7,12 @@ export function protectionLabel(p: ProtectionLevel): string {
     case 'tpm':
       return 'TPM';
     default:
-      return 'Software key';
+      return 'Software';
   }
 }
 
 export function presenceLabel(platform: StatusView['platform'] | 'unknown', userPresence: boolean): string {
-  if (!userPresence) return 'No OS approval prompt';
+  if (!userPresence) return 'No OS prompt';
   return platform === 'windows' ? 'Windows Hello' : 'Touch ID or password';
 }
 
