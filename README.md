@@ -149,7 +149,9 @@ Environment switches:
 
 ## Release builds
 
-Push a `v<version>` tag that matches `package.json`.
+Push a `v<version>` tag (`git tag v1.2.0 && git push origin v1.2.0`). The
+version comes from the tag: the workflow stamps it into `package.json` before
+building, so there's no need to bump `package.json` by hand.
 [.github/workflows/release.yml](.github/workflows/release.yml) builds both
 platforms into a draft release, attaches `install.sh` / `install.ps1`, and then
 publishes it. **No secrets are needed**: without them you get a free build.
