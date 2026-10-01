@@ -1,5 +1,5 @@
 # Free distribution: no Apple Developer account, no Windows certificate
-# (docs/installation.md#free-and-signed-builds). Used by the release workflow
+# (https://cortejojicoy.github.io/digital-signature-agent/#/installation/free-and-signed). Used by the release workflow
 # when a platform's signing secrets aren't set, and by `npm run dist:local`.
 #
 # macOS: ad-hoc signed and not notarized. Keys still live in the Secure
