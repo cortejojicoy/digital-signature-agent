@@ -9,11 +9,16 @@ export const IPC = {
   approveJob: 'agent:approve-job',
   rejectJob: 'agent:reject-job',
   unpair: 'agent:unpair',
+  setDeveloperMode: 'agent:set-developer-mode',
+  getUpdate: 'agent:get-update',
+  checkForUpdates: 'agent:check-for-updates',
+  installUpdate: 'agent:install-update',
   // main → renderer events
   statusChanged: 'agent:status-changed',
   pairingProgress: 'agent:pairing-progress',
   pairPrefill: 'agent:pair-prefill',
   jobState: 'agent:job-state',
+  updateChanged: 'agent:update-changed',
 } as const;
 
 export type ProtectionLevel = 'secure_enclave' | 'tpm' | 'software';
@@ -27,6 +32,8 @@ export interface ServerView {
   protection: ProtectionLevel;
   userPresence: boolean;
   pairedAt: string;
+  /** Paired over plain http:// (Developer mode). */
+  insecure: boolean;
 }
 
 export interface StatusView {
@@ -34,7 +41,27 @@ export interface StatusView {
   platform: 'macos' | 'windows' | 'other';
   capabilities: { hardware: boolean; userPresence: boolean; attestation: boolean };
   servers: ServerView[];
+  /** `locked`: always on under npm run dev. */
+  developerMode: { on: boolean; locked: boolean };
 }
+
+export interface ReleaseView {
+  version: string;
+  name: string;
+  notes: string;
+  url: string;
+  publishedAt: string;
+}
+
+export type UpdateView =
+  | { state: 'idle' }
+  | { state: 'checking' }
+  | { state: 'up_to_date'; checkedAt: string }
+  /** `install`: download in place, or open the release page (free macOS builds, npm run dev). */
+  | { state: 'available'; release: ReleaseView; install: 'download' | 'open_page' }
+  | { state: 'downloading'; release: ReleaseView; percent: number }
+  | { state: 'ready'; release: ReleaseView }
+  | { state: 'error'; message: string };
 
 export type PairingProgressView =
   | { stage: 'looking_up' }
@@ -71,8 +98,14 @@ export interface AgentBridge {
   approveJob(id: string): Promise<void>;
   rejectJob(id: string): Promise<void>;
   unpair(serverId: string): Promise<void>;
+  setDeveloperMode(on: boolean): Promise<void>;
+  getUpdate(): Promise<UpdateView>;
+  checkForUpdates(): Promise<void>;
+  /** Downloads, restarts to install, or opens the release page, depending on the state. */
+  installUpdate(): Promise<void>;
   onStatusChanged(cb: () => void): () => void;
   onPairingProgress(cb: (p: PairingProgressView) => void): () => void;
   onPairPrefill(cb: (p: { origin: string; code: string }) => void): () => void;
   onJobState(cb: (s: JobState & { id: string }) => void): () => void;
+  onUpdateChanged(cb: (u: UpdateView) => void): () => void;
 }
