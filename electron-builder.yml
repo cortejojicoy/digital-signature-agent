@@ -58,6 +58,8 @@ mac:
   extendInfo:
     LSUIElement: true # menu-bar app, no Dock icon
     NSFaceIDUsageDescription: Approve signatures with Touch ID.
+    # Developer mode: reaching apps on the local network (macOS 15+ asks first).
+    NSLocalNetworkUsageDescription: Connect to signing apps on your local network (Developer mode).
 
 win:
   target:
