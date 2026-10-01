@@ -2,7 +2,7 @@
 // mock server over HTTP, with a software key store.
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -58,7 +58,7 @@ async function setup(opts: { server?: MockServerOptions; keystore?: MemoryKeySto
     keystore,
     store,
     agentVersion: opts.agentVersion ?? '1.0.0',
-    allowInsecureLocalhost: true,
+    allowInsecureLocalNetwork: true,
     pollIntervalMs: 5,
     confirm: async (request) => {
       h.confirms.push(request);
@@ -130,7 +130,7 @@ describe('pairing', () => {
     const h = await setup();
     h.server.startPairing();
     await expect(h.agent.pair(h.server.origin, 'AAAA-BBBB')).rejects.toThrow(/invalid or has expired/);
-    await expect(h.agent.pair('http://evil.test', 'AAAA-BBBB')).rejects.toThrow(/HTTPS/);
+    await expect(h.agent.pair('http://evil.example.com', 'AAAA-BBBB')).rejects.toThrow(/HTTPS/);
     expect(h.keystore.keys.size).toBe(0);
   });
 
@@ -142,6 +142,42 @@ describe('pairing', () => {
     const after = h.store.list()[0];
     expect(after.identityKeyId).not.toBe(before.identityKeyId);
     expect([...h.keystore.keys.keys()].sort()).toEqual([after.identityKeyId, after.sessionKeyId].sort());
+  });
+});
+
+const HAS_LAN = Object.values(networkInterfaces()).some((list) =>
+  list?.some((a) => a.family === 'IPv4' && !a.internal && /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(a.address)),
+);
+
+describe('local network (npm run dev)', () => {
+  it.skipIf(!HAS_LAN)('pairs and signs against a server on a LAN address', async () => {
+    const h = await setup({ server: { lan: true } });
+    expect(h.server.origin).toMatch(/^http:\/\/(?:10|172|192)\./);
+    await h.pairNow();
+    expect(h.store.list()[0].origin).toBe(h.server.origin);
+
+    const { link } = h.server.createJob('LAN test', DOC_HASH);
+    expect(await h.agent.handleLink(link)).toMatchObject({ result: 'completed' });
+  });
+
+  it('stops using HTTP pairings when Developer mode is turned off', async () => {
+    const h = await setup();
+    await h.pairNow();
+    expect(h.agent.servers()[0].insecure).toBe(true);
+
+    h.agent.setAllowInsecureLocalNetwork(false);
+    const { link } = h.server.createJob('After dev mode', DOC_HASH);
+    // Job links carry no origin, so they still arrive; the job fails cleanly.
+    expect(await h.agent.handleLink(link)).toMatchObject({ result: 'failed', error: expect.stringMatching(/Developer mode/) });
+    expect(h.confirms).toHaveLength(0);
+    await expect(h.agent.pair(h.server.origin, 'AAAA-BBBB')).rejects.toThrow(/HTTPS address/);
+  });
+
+    it('refuses to pair when the server reports a different origin', async () => {
+    const h = await setup();
+    const { userCode } = h.server.startPairing();
+    const other = h.server.origin.replace('127.0.0.1', 'localhost');
+    await expect(h.agent.pair(other, userCode)).rejects.toThrow(/APP_URL/);
   });
 });
 
@@ -237,7 +273,7 @@ describe('request authentication', () => {
     const replaying = new AgentApi({
       origin: server.origin,
       agentVersion: '1.0.0',
-      allowInsecureLocalhost: true,
+      allowInsecureLocalNetwork: true,
       fetch: (url, init) => {
         captured.push(init);
         return fetch(url, init);

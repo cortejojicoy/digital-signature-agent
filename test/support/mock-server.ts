@@ -11,6 +11,7 @@
 import { createHash, createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { networkInterfaces } from 'node:os';
 
 export interface MockUser {
   id: string;
@@ -19,6 +20,8 @@ export interface MockUser {
 
 export interface MockServerOptions {
   port?: number;
+  /** Bind to every interface and advertise this machine's LAN address, so an agent on another machine can reach it. */
+  lan?: boolean;
   serverId?: string;
   serverName?: string;
   minVersion?: string;
@@ -146,9 +149,11 @@ export class MockSigningServer {
   }
 
   async listen(): Promise<string> {
-    await new Promise<void>((resolve) => this.http.listen(this.options.port ?? 0, '127.0.0.1', resolve));
+    const lan = this.options.lan ? lanAddress() : null;
+    if (this.options.lan && !lan) throw new Error('no LAN IPv4 address found; is this machine on a network?');
+    await new Promise<void>((resolve) => this.http.listen(this.options.port ?? 0, lan ? '0.0.0.0' : '127.0.0.1', resolve));
     const { port } = this.http.address() as AddressInfo;
-    this.origin = `http://127.0.0.1:${port}`;
+    this.origin = `http://${lan ?? '127.0.0.1'}:${port}`;
     return this.origin;
   }
 
@@ -430,12 +435,25 @@ function send(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(data));
 }
 
-// Standalone: node test/support/mock-server.ts [port]
+/** First private (RFC 1918) IPv4 address, e.g. 192.168.1.20: the agent accepts plain http:// only for those. */
+function lanAddress(): string | null {
+  const isPrivate = (ip: string) => /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(ip);
+  for (const addresses of Object.values(networkInterfaces())) {
+    const found = addresses?.find((a) => a.family === 'IPv4' && !a.internal && isPrivate(a.address));
+    if (found) return found.address;
+  }
+  return null;
+}
+
+// Standalone: node test/support/mock-server.ts [port] [--lan]
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const server = new MockSigningServer({ port: Number(process.argv[2] ?? 8787) });
+  const args = process.argv.slice(2);
+  const port = Number(args.find((a) => /^\d+$/.test(a)) ?? 8787);
+  const server = new MockSigningServer({ port, lan: args.includes('--lan') });
   const origin = await server.listen();
   const { uuid, userCode, link } = server.startPairing();
   console.log(`Mock signing server on ${origin}`);
+  if (args.includes('--lan')) console.log('Reachable from this network: run the agent with `npm run dev` on the other machine.');
   console.log(`\nPair: enter ${origin} and code ${userCode}\n   or open ${link}`);
   console.log(`\nThen confirm on the "web":  curl -X POST ${origin}/__dev/pairings/${uuid}/confirm`);
   console.log(`Create a job:               curl -X POST ${origin}/__dev/jobs -d '{"title":"Accomplishment Report – Sept"}'`);

@@ -32,6 +32,21 @@ describe('AgentApi', () => {
     expect(() => new AgentApi({ origin: 'https://sign.example.gov.ph/path', agentVersion: '1.0.0' })).toThrow();
   });
 
+  it('allows plain HTTP to local-network hosts only when the policy allows it (npm run dev)', () => {
+    expect(() => new AgentApi({ origin: 'http://192.168.1.20:8000', agentVersion: '1.0.0' })).toThrow();
+    const api = new AgentApi({ origin: 'http://192.168.1.20:8000', agentVersion: '1.0.0', allowInsecureLocalNetwork: true });
+    expect(api.origin).toBe('http://192.168.1.20:8000');
+    expect(
+      () => new AgentApi({ origin: 'http://sign.example.gov.ph', agentVersion: '1.0.0', allowInsecureLocalNetwork: true }),
+    ).toThrow();
+  });
+
+  it('adds a clock hint to stale_request errors', async () => {
+    const { fetch } = recordingFetch({ status: 401, body: { error: { code: 'stale_request', message: 'Request timestamp outside ±60 s.' } } });
+    const api = new AgentApi({ origin: 'https://sign.example.gov.ph', agentVersion: '1.0.0', fetch });
+    await expect(api.status(credentials())).rejects.toThrow(/computer's clock/);
+  });
+
   it('sends unauthenticated pairing calls to the pinned origin without following redirects', async () => {
     const { fetch, calls } = recordingFetch({ body: { pairing: 'p' } });
     const api = new AgentApi({ origin: 'https://sign.example.gov.ph', agentVersion: '1.2.3', fetch });
