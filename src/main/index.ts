@@ -5,9 +5,11 @@ import path from 'node:path';
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   nativeImage,
+  net,
   Notification,
   safeStorage,
   session,
@@ -22,6 +24,7 @@ import {
   type PairingProgressView,
   type PairingResult,
   type StatusView,
+  type UpdateView,
 } from '../shared/ipc';
 import { Agent } from './agent';
 import { APP_ORIGIN, appUrl, handleAppScheme, registerAppScheme } from './app-protocol';
@@ -30,8 +33,9 @@ import { loadNativeKeyStore, type Sealer } from './keystore';
 import type { PairingProgress } from './pairing';
 import { SCHEME, linkFromArgv } from './protocol';
 import { AVOID_KEYCHAIN } from './build-info';
+import { SettingsStore } from './settings';
 import { Store, sealedTokenCipher, type TokenCipher } from './store';
-import { checkForUpdates, startUpdater } from './updater';
+import { checkForUpdates, getUpdateStatus, installUpdate, startUpdater } from './updater';
 
 const APP_ROOT = path.join(__dirname, '..', '..');
 const RENDERER_DIR = path.join(APP_ROOT, 'dist', 'renderer');
@@ -61,6 +65,9 @@ function main(): void {
   let tray: Tray | null = null;
   let mainWindow: BrowserWindow | null = null;
   let pairingAbort: AbortController | null = null;
+  let settings: SettingsStore | null = null;
+  // Developer mode: plain http:// to local-network apps. Always on under npm run dev.
+  let developerMode = DEV;
 
   interface PendingConfirm {
     request: ConfirmRequest;
@@ -111,12 +118,18 @@ function main(): void {
     const keystore = loadNativeKeyStore(APP_ROOT, { keyDirectory: path.join(app.getPath('userData'), 'keys') });
     const store = new Store(app.getPath('userData'), tokenCipher(keystore));
     await store.load();
+    settings = new SettingsStore(app.getPath('userData'));
+    developerMode = DEV || (await settings.load()).developerMode;
 
     agent = new Agent({
       keystore,
       store,
       agentVersion: app.getVersion(),
-      allowInsecureLocalhost: DEV,
+      allowInsecureLocalNetwork: developerMode,
+      // In Developer mode, requests go through Chromium's network stack, which
+      // trusts the OS certificate store, so Herd / Valet / mkcert HTTPS works
+      // for local testing. Otherwise Node's fetch and its bundled CA list.
+      fetch: (input, init) => (developerMode ? net.fetch(input, init) : fetch(input, init)),
       biometryOnly: process.env.KUKUX_BIOMETRY_ONLY === '1',
       confirm: openConfirm,
       parentWindow: () => activeConfirm?.window.getNativeWindowHandle(),
@@ -132,7 +145,7 @@ function main(): void {
 
     registerIpc();
     createTray();
-    startUpdater();
+    startUpdater(broadcastUpdate);
 
     const initial = linkFromArgv(process.argv);
     if (initial) pendingLinks.push(initial);
@@ -162,7 +175,7 @@ function main(): void {
     }
     mainWindow = new BrowserWindow({
       width: 460,
-      height: 620,
+      height: 720,
       resizable: false,
       maximizable: false,
       fullscreenable: false,
@@ -243,8 +256,8 @@ function main(): void {
     if (outcome.result === 'failed') {
       sendJobState(jobId, { state: 'failed', error: outcome.error });
       if (outcome.code === 'agent_outdated') {
-        notify('Update required', 'The server needs a newer version of Kukux Sign Agent. Updating…');
-        void checkForUpdates();
+        notify('Update required', 'This app needs a newer agent. Updating…');
+        void checkForUpdates({ background: true });
       } else if (!confirms.has(jobId)) {
         notify('Signing failed', outcome.error);
       }
@@ -265,7 +278,14 @@ function main(): void {
     const rebuild = () => {
       tray?.setContextMenu(
         Menu.buildFromTemplate([
-          { label: 'Open Kukux Sign Agent', click: () => showMainWindow() },
+          { label: 'Open', click: () => showMainWindow() },
+          {
+            label: 'Check for updates',
+            click: () => {
+              showMainWindow();
+              void checkForUpdates();
+            },
+          },
           { type: 'separator' },
           {
             label: 'Start at login',
@@ -289,6 +309,33 @@ function main(): void {
     for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.statusChanged);
   }
 
+  function broadcastUpdate(update: UpdateView): void {
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.updateChanged, update);
+  }
+
+  /** Turning it on is confirmed here, in the main process, not by the page. */
+  async function setDeveloperMode(on: boolean): Promise<void> {
+    if (DEV || on === developerMode) return;
+    if (on) {
+      const options: Electron.MessageBoxOptions = {
+        type: 'warning',
+        message: 'Turn on Developer mode?',
+        detail:
+          'Allows pairing with apps on this computer or your local network over plain HTTP, for testing. ' +
+          'Traffic to those apps is not encrypted.',
+        buttons: ['Turn on', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+      };
+      const { response } = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+      if (response !== 0) return;
+    }
+    developerMode = on;
+    agent!.setAllowInsecureLocalNetwork(on);
+    await settings!.update({ developerMode: on });
+    broadcastStatus();
+  }
+
   // ── IPC (§7.1): only from our own bundled pages ──
 
   function trusted(event: IpcMainInvokeEvent): boolean {
@@ -309,6 +356,7 @@ function main(): void {
       platform: process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'other',
       capabilities: await agent!.capabilities(),
       servers: agent!.servers(),
+      developerMode: { on: developerMode, locked: DEV },
     }));
 
     handle(IPC.startPairing, async (input: { origin: string; code: string }): Promise<PairingResult> => {
@@ -352,6 +400,10 @@ function main(): void {
     handle(IPC.approveJob, (id: string) => decide(id, true));
     handle(IPC.rejectJob, (id: string) => decide(id, false));
     handle(IPC.unpair, (serverId: string) => agent!.unpair(serverId));
+    handle(IPC.setDeveloperMode, (on: boolean) => setDeveloperMode(on === true));
+    handle(IPC.getUpdate, () => getUpdateStatus());
+    handle(IPC.checkForUpdates, () => checkForUpdates());
+    handle(IPC.installUpdate, () => installUpdate());
   }
 }
 
