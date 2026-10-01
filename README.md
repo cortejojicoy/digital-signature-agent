@@ -105,8 +105,36 @@ npm run dev                 # builds and starts Electron
 
 Then pair with the printed origin and code, and confirm with the printed
 `curl … /confirm`. Create a job with `curl -X POST <origin>/__dev/jobs` and
-open the returned `kukuxsign://job/…` link. Plain `http://localhost` origins
-are accepted only in unpackaged builds.
+open the returned `kukuxsign://job/…` link.
+
+### Testing against a local project
+
+Turn on **Developer mode** in the agent window (it's always on under
+`npm run dev`; installed builds ask for confirmation and default to off). It
+lets the agent accept plain `http://` for local addresses: `localhost`,
+`127.x`, `[::1]`, private LAN IPs (`10.x`, `172.16–31.x`, `192.168.x`,
+link-local), and `*.local`, `*.test`, `*.localhost` names. Public addresses
+stay HTTPS-only. In Developer mode the agent also trusts the OS certificate
+store, so Herd / Valet / mkcert HTTPS works too. Turning it off stops
+HTTP pairings from working until it's back on; they're marked **HTTP**.
+
+- **Same machine:** `php artisan serve` with `APP_URL=http://127.0.0.1:8000`,
+  or Herd (`http://my-app.test`, or `herd secure` for HTTPS). Enter that exact
+  address in the agent.
+- **Another machine on the same network:** on the server machine, run
+  `php artisan serve --host=0.0.0.0 --port=8000` with
+  `APP_URL=http://<LAN-IP>:8000`, and allow port 8000 through its firewall.
+  Open the web app in the browser on the agent machine at that same address,
+  and turn on Developer mode there (or use `npm run dev`). To try this without Laravel, run
+  `npm run mock-server -- --lan`, which binds to every interface and prints
+  the LAN address.
+
+The address must match the server's `APP_URL` exactly, or pairing fails with
+`origin_mismatch` (`localhost` and `127.0.0.1` count as different). Request
+proofs allow ±60 s of clock difference, so keep both machines' clocks synced.
+On macOS 15+, allow the agent when it asks for Local Network access. On plain
+HTTP the agent token and job details travel unencrypted over the network, so
+use this for testing only.
 
 > Running inside VS Code's terminal? It may export `ELECTRON_RUN_AS_NODE=1`,
 > which makes Electron start as plain Node. Use `env -u ELECTRON_RUN_AS_NODE npm run dev`.
@@ -161,5 +189,7 @@ Keys created by a free build (CryptoKit blobs) keep working after switching to
 signed builds; new pairings then use the keychain.
 
 The Electron fuses from plan §7.1 are set in [electron-builder.yml](electron-builder.yml).
-Updates come from the GitHub release feed (`latest*.yml`). Free macOS builds
-announce updates instead of installing them.
+Updates: the agent reads the latest release (version, date, notes) from the
+GitHub Releases API, and installs from that release's `latest*.yml` feed.
+**Check for updates** is in the agent window and the tray menu. Free macOS
+builds and `npm run dev` open the release page instead of installing.
