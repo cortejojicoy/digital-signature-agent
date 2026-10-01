@@ -18,10 +18,15 @@ const bridge: AgentBridge = {
   approveJob: (id) => ipcRenderer.invoke(IPC.approveJob, String(id)),
   rejectJob: (id) => ipcRenderer.invoke(IPC.rejectJob, String(id)),
   unpair: (serverId) => ipcRenderer.invoke(IPC.unpair, String(serverId)),
+  setDeveloperMode: (on) => ipcRenderer.invoke(IPC.setDeveloperMode, on === true),
+  getUpdate: () => ipcRenderer.invoke(IPC.getUpdate),
+  checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
+  installUpdate: () => ipcRenderer.invoke(IPC.installUpdate),
   onStatusChanged: (cb) => subscribe(IPC.statusChanged, cb),
   onPairingProgress: (cb) => subscribe(IPC.pairingProgress, cb),
   onPairPrefill: (cb) => subscribe(IPC.pairPrefill, cb),
   onJobState: (cb) => subscribe(IPC.jobState, cb),
+  onUpdateChanged: (cb) => subscribe(IPC.updateChanged, cb),
 };
 
 contextBridge.exposeInMainWorld('agent', bridge);
