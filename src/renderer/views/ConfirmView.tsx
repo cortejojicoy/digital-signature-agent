@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import type { JobState, JobView } from '../../shared/ipc';
+import { Icon } from '../icons';
 import { currentPlatform, presenceLabel, protectionLabel } from '../labels';
 
 const ARM_DELAY_MS = 1000;
@@ -56,8 +57,8 @@ export function ConfirmView({ jobId }: { jobId: string }) {
     return (
       <main className="page">
         <section className="card center">
-          <h1>This request is no longer available</h1>
-          <p className="muted">It may have expired. Start again from the web app.</p>
+          <h1>Request expired</h1>
+          <p className="muted">Start again in the web app.</p>
         </section>
       </main>
     );
@@ -80,7 +81,7 @@ export function ConfirmView({ jobId }: { jobId: string }) {
             <>
               <div className="big-check" aria-hidden="true">✓</div>
               <h1>Signed</h1>
-              <p className="muted">Return to your browser to continue.</p>
+              <p className="muted">Return to your browser.</p>
             </>
           )}
           {state.state === 'rejected' && (
@@ -123,15 +124,16 @@ export function ConfirmView({ jobId }: { jobId: string }) {
         </dl>
       </section>
 
-      <p className="muted small">Only approve if you started this in your browser just now.</p>
+      <p className="muted small">Approve only if you just started this in your browser.</p>
 
       <div className="actions">
-        <button type="button" className="button button-quiet" disabled={!armed} onClick={() => void window.agent.rejectJob(jobId)}>
+        <button type="button" className="button button-quiet button-icon" disabled={!armed} onClick={() => void window.agent.rejectJob(jobId)}>
+          <Icon name="x" />
           Decline
         </button>
         <button
           type="button"
-          className="button button-primary"
+          className="button button-primary button-icon"
           disabled={!armed}
           onClick={(e) => {
             // A pointer click only (detail > 0): Enter / Space typed into a
@@ -139,6 +141,7 @@ export function ConfirmView({ jobId }: { jobId: string }) {
             if (e.detail > 0) void window.agent.approveJob(jobId);
           }}
         >
+          <Icon name="check" />
           Approve
         </button>
       </div>

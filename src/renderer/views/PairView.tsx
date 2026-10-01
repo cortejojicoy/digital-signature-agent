@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
 import type { PairingProgressView } from '../../shared/ipc';
+import { IconButton } from '../icons';
 
 interface Props {
   initialOrigin?: string;
@@ -57,10 +58,8 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
         <section className="card center">
           <div className="big-check" aria-hidden="true">✓</div>
           <h1>Paired with {pairedWith}</h1>
-          <p className="muted">You can now choose “Sign with this computer” in the web app.</p>
-          <button type="button" className="button button-primary" onClick={onDone}>
-            Done
-          </button>
+          <p className="muted">Choose “Sign with this computer” in the web app.</p>
+          <IconButton icon="check" label="Done" variant="primary" tip="above" onClick={onDone} autoFocus />
         </section>
       </main>
     );
@@ -71,8 +70,8 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
       <header className="page-header">
         <h1>Pair with an app</h1>
         <p className="muted">
-          In the web app, open <strong>My signing devices</strong> and choose <strong>Pair desktop agent</strong>. Enter
-          the address and code it shows, or paste the pairing link.
+          Enter the address and code from <strong>My signing devices → Pair desktop agent</strong>, or paste the pairing
+          link.
         </p>
       </header>
 
@@ -93,8 +92,7 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
         </label>
         {initialOrigin && (
           <p className="warning small">
-            A link asked to pair with <span className="mono">{initialOrigin}</span>. Only continue if that is the app you
-            use.
+            Opened from a link. Continue only if you use <span className="mono">{initialOrigin}</span>.
           </p>
         )}
         <label className="field">
@@ -120,16 +118,13 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
         )}
 
         <div className="actions">
-          <button
-            type="button"
-            className="button button-quiet"
+          <IconButton
+            icon={running ? 'x' : 'back'}
+            label={running ? 'Cancel pairing' : 'Back'}
+            tip="above"
             onClick={() => (running ? void window.agent.cancelPairing() : onDone())}
-          >
-            Cancel
-          </button>
-          <button type="submit" className="button button-primary" disabled={running}>
-            {running ? 'Pairing…' : 'Pair'}
-          </button>
+          />
+          <IconButton type="submit" icon="check" label={running ? 'Pairing…' : 'Pair'} variant="primary" tip="above" disabled={running} />
         </div>
       </form>
     </main>
@@ -139,13 +134,13 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
 function ProgressLine({ progress }: { progress: PairingProgressView }) {
   switch (progress.stage) {
     case 'looking_up':
-      return <p className="progress">Checking the code…</p>;
+      return <p className="progress">Checking code…</p>;
     case 'creating_keys':
-      return <p className="progress">Creating this computer’s keys for {progress.serverName}. Approve the prompt if asked.</p>;
+      return <p className="progress">Creating keys for {progress.serverName}. Approve the prompt.</p>;
     case 'awaiting_confirmation':
       return (
         <p className="progress">
-          Now confirm on the web: <strong>Pair “{progress.deviceLabel}”?</strong>
+          Confirm <strong>“{progress.deviceLabel}”</strong> in the web app.
         </p>
       );
     default:
