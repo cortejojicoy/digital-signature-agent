@@ -29,8 +29,12 @@ const SERVER_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const USER_CODE = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}-?[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}$/;
 
 export interface OriginPolicy {
-  /** Allow http://localhost and http://127.0.0.1 (development and tests only). */
-  allowInsecureLocalhost?: boolean;
+  /**
+   * Allow plain http:// for loopback and private-network hosts, so the agent
+   * can test against a project on this machine or another one on the same
+   * LAN. Unpackaged builds (npm run dev) and tests only.
+   */
+  allowInsecureLocalNetwork?: boolean;
 }
 
 export function parseLink(raw: string, policy: OriginPolicy = {}): AgentLink | null {
@@ -81,8 +85,8 @@ export function normalizeUserCode(input: string): string | null {
 
 /**
  * Returns the bare origin (scheme://host[:port]) or null. HTTPS only, except
- * localhost when the policy allows it. Paths, credentials, queries and
- * fragments are rejected rather than silently dropped.
+ * local-network hosts when the policy allows it. Paths, credentials, queries
+ * and fragments are rejected rather than silently dropped.
  */
 export function normalizeOrigin(input: string, policy: OriginPolicy = {}): string | null {
   let url: URL;
@@ -93,10 +97,35 @@ export function normalizeOrigin(input: string, policy: OriginPolicy = {}): strin
   }
   if (url.username || url.password || url.search || url.hash) return null;
   if (url.pathname !== '/' && url.pathname !== '') return null;
-  const localhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
   if (url.protocol === 'https:') return url.origin;
-  if (url.protocol === 'http:' && localhost && policy.allowInsecureLocalhost) return url.origin;
+  if (url.protocol === 'http:' && policy.allowInsecureLocalNetwork && isLocalNetworkHost(url.hostname)) return url.origin;
   return null;
+}
+
+// Names that never resolve on the public internet: loopback, mDNS (.local),
+// and the reserved .test / .localhost TLDs that Herd, Valet and friends use.
+const LOCAL_NAME = /^(?:localhost|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:localhost|local|test))$/;
+
+/**
+ * Loopback, private (RFC 1918), link-local and IPv6 unique-local addresses,
+ * plus local-only names. `hostname` is as WHATWG URL normalizes it: lower
+ * case, IPv4 in dotted decimal, IPv6 in brackets.
+ */
+export function isLocalNetworkHost(hostname: string): boolean {
+  if (LOCAL_NAME.test(hostname)) return true;
+
+  const v4 = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    const v6 = hostname.slice(1, -1);
+    // ::1 loopback, fc00::/7 unique local, fe80::/10 link-local.
+    return v6 === '::1' || /^f[cd][0-9a-f]{2}:/.test(v6) || /^fe[89ab][0-9a-f]:/.test(v6);
+  }
+  return false;
 }
 
 /** Finds a kukuxsign:// link in process argv (Windows second-instance / first launch). */
