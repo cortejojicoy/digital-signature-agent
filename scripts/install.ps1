@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Installs Kukux Sign Agent on Windows (docs/installation.md).
+  Installs Kukux Sign Agent on Windows (https://cortejojicoy.github.io/digital-signature-agent/#/installation).
 
 .DESCRIPTION
   irm https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.ps1 | iex

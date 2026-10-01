@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kukux Sign Agent installer for macOS (docs/installation.md).
+# Kukux Sign Agent installer for macOS (https://cortejojicoy.github.io/digital-signature-agent/#/installation).
 #
 #   curl -fsSL https://github.com/cortejojicoy/digital-signature-agent/releases/latest/download/install.sh | bash
 #   curl -fsSL …/install.sh | bash -s -- --version 1.2.0
