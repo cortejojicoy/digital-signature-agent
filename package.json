@@ -1,7 +1,7 @@
 {
   "name": "kukux-digital-signature-agent",
   "productName": "Kukux Sign Agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Desktop signing agent: hardware-backed device keys (Secure Enclave / TPM) for the kukux/digital-signature package.",
   "private": true,
   "license": "MIT",
