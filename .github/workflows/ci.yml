@@ -29,7 +29,7 @@ jobs:
       - run: npm run build
 
   # Build an unsigned package and run the real install scripts against it,
-  # over the same latest*.yml download path users get (docs/installation.md).
+  # over the same latest*.yml download path users get (see the Installation docs).
   installers:
     needs: test
     strategy:

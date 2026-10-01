@@ -10,7 +10,7 @@ name: Release
 #
 # Free by default: with no secrets, macOS is ad-hoc signed (keys still in the
 # Secure Enclave) and Windows is unsigned (keys still in the TPM / Hello). See
-# docs/installation.md#free-and-signed-builds.
+# https://cortejojicoy.github.io/digital-signature-agent/#/installation/free-and-signed
 #
 # Optional paid signing: a platform is signed when ALL of its secrets exist in
 # the "release" environment (or the repository):
@@ -55,7 +55,7 @@ jobs:
         run: |
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
-              --title "Kukux Sign Agent ${GITHUB_REF_NAME#v}" --notes "Install: see docs/installation.md"
+              --title "Kukux Sign Agent ${GITHUB_REF_NAME#v}" --notes "Install: https://cortejojicoy.github.io/digital-signature-agent/#/installation"
           fi
 
   build:
@@ -168,7 +168,7 @@ jobs:
           fi
           gh release upload "$GITHUB_REF_NAME" scripts/install.sh scripts/install.ps1 --clobber --repo "$GITHUB_REPOSITORY"
 
-          notes="Install: see [docs/installation.md](https://github.com/$GITHUB_REPOSITORY/blob/main/docs/installation.md)."
+          notes="Install: see the [installation guide](https://cortejojicoy.github.io/digital-signature-agent/#/installation)."
           if [ "$MAC_SIGNED" != "true" ] || [ "$WIN_SIGNED" != "true" ]; then
             notes="$notes
 
