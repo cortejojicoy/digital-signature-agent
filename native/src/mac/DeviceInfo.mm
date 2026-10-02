@@ -85,6 +85,13 @@ std::string platformUuid() {
     return uuid;
 }
 
+// 1 inside a VM (Virtualization.framework, Parallels, VMware, UTM).
+bool runningInVm() {
+    int value = 0;
+    size_t size = sizeof(value);
+    return sysctlbyname("kern.hv_vmm_present", &value, &size, nullptr, 0) == 0 && value == 1;
+}
+
 std::string computerName() {
     CFStringRef name = SCDynamicStoreCopyComputerName(nullptr, nullptr);
     if (name == nullptr) return [[NSProcessInfo processInfo].hostName UTF8String];
@@ -109,6 +116,7 @@ DeviceInfo readDeviceInfo(const std::string& salt) {
         info.formFactor = formFactor();
         info.hostname = computerName();
         info.hardwareIdHash = saltedHardwareHash(salt, platformUuid());
+        info.isVirtual = runningInVm();
         return info;
     }
 }
