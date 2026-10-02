@@ -23,7 +23,6 @@ const bridge: AgentBridge = {
   getUpdate: () => ipcRenderer.invoke(IPC.getUpdate),
   checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
   installUpdate: () => ipcRenderer.invoke(IPC.installUpdate),
-  getWhatsNew: () => ipcRenderer.invoke(IPC.getWhatsNew),
   openReleases: () => ipcRenderer.invoke(IPC.openReleases),
   fitContent: (height) => ipcRenderer.invoke(IPC.fitContent, Number(height)),
   onStatusChanged: (cb) => subscribe(IPC.statusChanged, cb),
