@@ -30,7 +30,7 @@ import { Agent } from './agent';
 import { APP_ORIGIN, appUrl, handleAppScheme, registerAppScheme } from './app-protocol';
 import type { ConfirmRequest, JobOutcome } from './jobs';
 import { loadNativeKeyStore, type Sealer } from './keystore';
-import type { PairingProgress } from './pairing';
+import { PairingError, type PairingProgress } from './pairing';
 import { SCHEME, linkFromArgv } from './protocol';
 import { AVOID_KEYCHAIN } from './build-info';
 import { SettingsStore } from './settings';
@@ -65,6 +65,8 @@ function main(): void {
   let tray: Tray | null = null;
   let mainWindow: BrowserWindow | null = null;
   let pairingAbort: AbortController | null = null;
+  // Resolves the "already paired here: re-pair?" question of the running pairing.
+  let repairAnswer: ((repair: boolean) => void) | null = null;
   let settings: SettingsStore | null = null;
   // Developer mode: plain http:// to local-network apps. Always on under npm run dev.
   let developerMode = DEV;
@@ -144,6 +146,9 @@ function main(): void {
     });
 
     registerIpc();
+    // Device types for older pairings, and revokes left over from an offline unpair.
+    void agent.init().catch(() => {});
+    setInterval(() => void agent?.retryRevokes().catch(() => {}), 60 * 60_000);
     createTray();
     startUpdater(broadcastUpdate);
 
@@ -351,33 +356,60 @@ function main(): void {
   }
 
   function registerIpc(): void {
-    handle(IPC.getStatus, async (): Promise<StatusView> => ({
-      version: app.getVersion(),
-      platform: process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'other',
-      capabilities: await agent!.capabilities(),
-      servers: agent!.servers(),
-      developerMode: { on: developerMode, locked: DEV },
-    }));
+    handle(IPC.getStatus, async (): Promise<StatusView> => {
+      // Other devices load in the background; the window refreshes when they arrive.
+      void agent!
+        .refreshOtherDevices()
+        .then((changed) => changed && broadcastStatus())
+        .catch(() => {});
+      return {
+        version: app.getVersion(),
+        platform: process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'other',
+        capabilities: await agent!.capabilities(),
+        servers: agent!.servers(),
+        developerMode: { on: developerMode, locked: DEV },
+      };
+    });
 
     handle(IPC.startPairing, async (input: { origin: string; code: string }): Promise<PairingResult> => {
       pairingAbort?.abort();
       const abort = new AbortController();
       pairingAbort = abort;
       try {
+        let rebound = false;
         const server = await agent!.pair(input.origin, input.code, {
           signal: abort.signal,
-          onProgress: (p) => mainWindow?.webContents.send(IPC.pairingProgress, toProgressView(p)),
+          onProgress: (p) => {
+            if (p.stage === 'paired') rebound = p.rebound;
+            mainWindow?.webContents.send(IPC.pairingProgress, toProgressView(p));
+          },
+          confirmRepair: () =>
+            new Promise<boolean>((resolve) => {
+              repairAnswer = resolve;
+              abort.signal.addEventListener('abort', () => resolve(false), { once: true });
+            }),
         });
-        return { ok: true, serverName: server.name };
+        return { ok: true, serverName: server.name, rebound };
       } catch (err) {
+        if (err instanceof PairingError) {
+          const blocking = err.serverId ? agent!.servers().find((s) => s.id === err.serverId) : undefined;
+          return { ok: false, error: err.message, code: err.code, serverId: err.serverId, serverName: blocking?.name };
+        }
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       } finally {
+        repairAnswer = null;
         if (pairingAbort === abort) pairingAbort = null;
       }
     });
 
     handle(IPC.cancelPairing, () => {
       pairingAbort?.abort();
+    });
+
+    handle(IPC.confirmRepair, (repair: boolean) => {
+      const answer = repairAnswer;
+      repairAnswer = null;
+      answer?.(repair === true);
     });
 
     handle(IPC.getJob, (id: string): JobView | null => {
@@ -394,6 +426,7 @@ function main(): void {
         expiresAt: job.expires_at,
         protection: server.protection,
         userPresence: server.userPresence,
+        deviceType: server.deviceType ?? 'other',
       };
     });
 
@@ -424,5 +457,5 @@ function tokenCipher(sealer: Sealer): TokenCipher {
 }
 
 function toProgressView(p: PairingProgress): PairingProgressView {
-  return p.stage === 'paired' ? { stage: 'paired', serverName: p.server.name } : p;
+  return p.stage === 'paired' ? { stage: 'paired', serverName: p.server.name, rebound: p.rebound } : p;
 }
