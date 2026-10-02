@@ -1,6 +1,5 @@
 // App lifecycle, single-instance lock, protocol links, tray and windows
 // (desktop-agent-plan.md §7).
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -28,7 +27,6 @@ import {
   type PairingResult,
   type StatusView,
   type UpdateView,
-  type WhatsNewView,
 } from '../shared/ipc';
 import { Agent } from './agent';
 import { APP_ORIGIN, appUrl, handleAppScheme, registerAppScheme } from './app-protocol';
@@ -39,7 +37,7 @@ import { SCHEME, linkFromArgv } from './protocol';
 import { AVOID_KEYCHAIN } from './build-info';
 import { SettingsStore } from './settings';
 import { Store, sealedTokenCipher, type TokenCipher } from './store';
-import { ALL_RELEASES_PAGE, parseChangelog, whatsNew, type ChangelogEntry } from './release';
+import { ALL_RELEASES_PAGE } from './release';
 import { checkForUpdates, getUpdateStatus, installUpdate, startUpdater } from './updater';
 
 const APP_ROOT = path.join(__dirname, '..', '..');
@@ -318,25 +316,6 @@ function main(): void {
     firstFit?.();
   }
 
-  // ── What's new ──
-
-  let changelog: ChangelogEntry[] | null = null;
-
-  function whatsNewView(): WhatsNewView {
-    // Copied into dist/ by scripts/build.mjs, so it ships inside the app.
-    if (changelog === null) {
-      try {
-        changelog = parseChangelog(readFileSync(path.join(APP_ROOT, 'dist', 'CHANGELOG.md'), 'utf8'));
-      } catch {
-        changelog = [];
-      }
-    }
-    const update = getUpdateStatus();
-    const release = 'release' in update ? update.release : null;
-    const current = app.getVersion();
-    return { current, entries: whatsNew(changelog, current, { dev: DEV, update: release }) };
-  }
-
   function notify(title: string, body: string): void {
     if (Notification.isSupported()) new Notification({ title, body }).show();
   }
@@ -503,7 +482,6 @@ function main(): void {
     handle(IPC.getUpdate, () => getUpdateStatus());
     handle(IPC.checkForUpdates, () => checkForUpdates());
     handle(IPC.installUpdate, () => installUpdate());
-    handle(IPC.getWhatsNew, () => whatsNewView());
     handle(IPC.openReleases, () => shell.openExternal(ALL_RELEASES_PAGE));
     // Needs the sending window, so not through handle().
     ipcMain.handle(IPC.fitContent, (event, height: unknown) => {

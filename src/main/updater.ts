@@ -9,14 +9,20 @@
 // macOS; the Authenticode publisher, or the SHA-512 over HTTPS for unsigned
 // Windows), and installs on restart.
 //
-// Free macOS builds and npm run dev: an unsigned app can't replace itself, so
-// the agent opens the release page instead, where the one-line installer is.
+// Free macOS builds: Squirrel.Mac only installs Developer ID signed updates,
+// so the agent updates itself the way install.sh installs it (self-update.ts):
+// download the .zip, check its SHA-512 and code signature, then swap the app
+// bundle once it quits.
+//
+// npm run dev, or an app the user can't replace (a folder they can't write
+// to): the agent opens the release page instead.
 import { app, net, Notification, shell } from 'electron';
 import { autoUpdater } from 'electron-updater';
 
 import type { UpdateView } from '../shared/ipc';
 import { SIGNED_BUILD } from './build-info';
-import { compareVersions, fetchLatestRelease, RELEASES_PAGE, type ReleaseInfo } from './release';
+import { compareVersions, fetchLatestRelease, RELEASE_DOWNLOADS, RELEASES_PAGE, type ReleaseInfo } from './release';
+import { bundlePath, canReplace, installPrepared, prepareUpdate, type PreparedUpdate } from './self-update';
 
 const SIX_HOURS = 6 * 60 * 60 * 1000;
 
@@ -24,9 +30,18 @@ let status: UpdateView = { state: 'idle' };
 let listener: (status: UpdateView) => void = () => {};
 let started = false;
 let announced: string | null = null;
+/** Free macOS builds: the downloaded, verified update waiting for a restart. */
+let prepared: PreparedUpdate | null = null;
+let swapping = false;
 
-function canInstallInPlace(): boolean {
-  return app.isPackaged && !(process.platform === 'darwin' && !SIGNED_BUILD);
+type Installer = 'electron-updater' | 'bundle-swap' | 'release-page';
+
+/** How this copy of the agent can update. */
+async function installer(): Promise<Installer> {
+  if (!app.isPackaged) return 'release-page';
+  if (process.platform !== 'darwin' || SIGNED_BUILD) return 'electron-updater';
+  const bundle = bundlePath(app.getPath('exe'));
+  return bundle && (await canReplace(bundle)) ? 'bundle-swap' : 'release-page';
 }
 
 function set(next: UpdateView): void {
@@ -44,7 +59,15 @@ export function startUpdater(onChange: (status: UpdateView) => void): void {
   started = true;
 
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = canInstallInPlace();
+  autoUpdater.autoInstallOnAppQuit = app.isPackaged && (process.platform !== 'darwin' || SIGNED_BUILD);
+  // Like autoInstallOnAppQuit: a downloaded free-build update installs when
+  // the agent quits, without starting it again.
+  // The swap is started asynchronously, so hold the quit until it's running.
+  app.on('will-quit', (event) => {
+    if (!prepared || swapping) return;
+    event.preventDefault();
+    void swap(false).finally(() => app.quit());
+  });
   autoUpdater.on('download-progress', (p) => {
     if (status.state === 'downloading') set({ ...status, percent: Math.round(p.percent) });
   });
@@ -85,7 +108,7 @@ export async function checkForUpdates(opts: { background?: boolean } = {}): Prom
     return;
   }
 
-  if (!canInstallInPlace()) {
+  if ((await installer()) === 'release-page') {
     set({ state: 'available', release, install: 'open_page' });
     if (opts.background) announce(release);
     return;
@@ -98,7 +121,12 @@ export async function checkForUpdates(opts: { background?: boolean } = {}): Prom
 /** The view's main update button: download, restart, or open the release page. */
 export async function installUpdate(): Promise<void> {
   if (status.state === 'ready') {
-    autoUpdater.quitAndInstall();
+    if (prepared) {
+      await swap(true);
+      app.quit();
+    } else {
+      autoUpdater.quitAndInstall();
+    }
   } else if (status.state === 'available') {
     if (status.install === 'open_page') await shell.openExternal(status.release.url);
     else await download(status.release);
@@ -109,6 +137,7 @@ export async function installUpdate(): Promise<void> {
 
 async function download(release: ReleaseInfo): Promise<void> {
   set({ state: 'downloading', release, percent: 0 });
+  if ((await installer()) === 'bundle-swap') return downloadBundle(release);
   try {
     // Loads latest*.yml from the release; the installer is verified against it.
     const result = await autoUpdater.checkForUpdates();
@@ -117,6 +146,34 @@ async function download(release: ReleaseInfo): Promise<void> {
   } catch (err) {
     set({ state: 'error', message: `Download failed. ${message(err)}` });
   }
+}
+
+async function downloadBundle(release: ReleaseInfo): Promise<void> {
+  try {
+    prepared = await prepareUpdate({
+      fetch: (input, init) => net.fetch(input, init),
+      baseUrl: `${RELEASE_DOWNLOADS}/v${release.version}`,
+      version: release.version,
+      onProgress: (percent) => {
+        if (status.state === 'downloading') set({ ...status, percent });
+      },
+    });
+  } catch (err) {
+    set({ state: 'error', message: `Download failed. ${message(err)}` });
+    return;
+  }
+  set({ state: 'ready', release });
+  if (Notification.isSupported()) {
+    new Notification({ title: `Update ${release.version} ready`, body: 'Restart the agent to install it.' }).show();
+  }
+}
+
+/** Starts the bundle swap; it runs after the agent exits. */
+async function swap(relaunch: boolean): Promise<void> {
+  const bundle = bundlePath(app.getPath('exe'));
+  if (!prepared || !bundle || swapping) return;
+  swapping = true;
+  await installPrepared(prepared, bundle, { pid: process.pid, relaunch });
 }
 
 function announce(release: ReleaseInfo): void {
