@@ -1,5 +1,6 @@
 // App lifecycle, single-instance lock, protocol links, tray and windows
 // (desktop-agent-plan.md §7).
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -12,7 +13,9 @@ import {
   net,
   Notification,
   safeStorage,
+  screen,
   session,
+  shell,
   Tray,
   type IpcMainInvokeEvent,
 } from 'electron';
@@ -25,6 +28,7 @@ import {
   type PairingResult,
   type StatusView,
   type UpdateView,
+  type WhatsNewView,
 } from '../shared/ipc';
 import { Agent } from './agent';
 import { APP_ORIGIN, appUrl, handleAppScheme, registerAppScheme } from './app-protocol';
@@ -35,12 +39,19 @@ import { SCHEME, linkFromArgv } from './protocol';
 import { AVOID_KEYCHAIN } from './build-info';
 import { SettingsStore } from './settings';
 import { Store, sealedTokenCipher, type TokenCipher } from './store';
+import { ALL_RELEASES_PAGE, parseChangelog, whatsNew, type ChangelogEntry } from './release';
 import { checkForUpdates, getUpdateStatus, installUpdate, startUpdater } from './updater';
 
 const APP_ROOT = path.join(__dirname, '..', '..');
 const RENDERER_DIR = path.join(APP_ROOT, 'dist', 'renderer');
 const PRELOAD = path.join(APP_ROOT, 'dist', 'preload', 'index.js');
 const DEV = !app.isPackaged;
+
+// Windows are as tall as their content (the page reports it, see fitContent),
+// within these bounds and the screen. The width stays fixed.
+const WINDOW_WIDTH = 460;
+const MIN_HEIGHT = 200;
+const SCREEN_MARGIN = 48;
 
 // ── Single instance + protocol registration (§7.2) ──
 
@@ -179,8 +190,9 @@ function main(): void {
       return mainWindow;
     }
     mainWindow = new BrowserWindow({
-      width: 460,
-      height: 720,
+      width: WINDOW_WIDTH,
+      height: 560,
+      useContentSize: true,
       resizable: false,
       maximizable: false,
       fullscreenable: false,
@@ -190,7 +202,7 @@ function main(): void {
     });
     mainWindow.removeMenu();
     void mainWindow.loadURL(appUrl('/status'));
-    mainWindow.once('ready-to-show', () => mainWindow?.show());
+    showWhenFitted(mainWindow, (win) => win.show());
     mainWindow.on('closed', () => {
       mainWindow = null;
       pairingAbort?.abort();
@@ -201,8 +213,9 @@ function main(): void {
   function openConfirm(request: ConfirmRequest): Promise<boolean> {
     return new Promise((resolve) => {
       const window = new BrowserWindow({
-        width: 460,
-        height: 520,
+        width: WINDOW_WIDTH,
+        height: 420,
+        useContentSize: true,
         resizable: false,
         minimizable: false,
         maximizable: false,
@@ -226,9 +239,9 @@ function main(): void {
         if (activeConfirm === pending) activeConfirm = null;
       });
       void window.loadURL(appUrl(`/confirm/${request.job.uuid}`));
-      window.once('ready-to-show', () => {
-        window.show();
-        window.focus();
+      showWhenFitted(window, (win) => {
+        win.show();
+        win.focus();
         app.focus();
       });
     });
@@ -269,6 +282,59 @@ function main(): void {
     }
     const pending = confirms.get(jobId);
     if (pending && !pending.window.isDestroyed()) setTimeout(() => pending.window.isDestroyed() || pending.window.close(), 2500);
+  }
+
+  // ── Content-sized windows ──
+
+  const awaitingFit = new Map<number, () => void>();
+
+  /** Shows a window once it has its content's height, so it doesn't visibly jump; or soon after load regardless. */
+  function showWhenFitted(win: BrowserWindow, show: (win: BrowserWindow) => void): void {
+    let shown = false;
+    const reveal = () => {
+      if (shown || win.isDestroyed()) return;
+      shown = true;
+      awaitingFit.delete(win.id);
+      show(win);
+    };
+    awaitingFit.set(win.id, reveal);
+    win.once('ready-to-show', () => setTimeout(reveal, 400));
+    win.on('closed', () => awaitingFit.delete(win.id));
+  }
+
+  function fitContent(win: BrowserWindow, height: number): void {
+    const { workArea } = screen.getDisplayMatching(win.getBounds());
+    const target = Math.round(Math.min(Math.max(height, MIN_HEIGHT), workArea.height - SCREEN_MARGIN));
+    const [width, current] = win.getContentSize();
+    const firstFit = awaitingFit.get(win.id);
+    if (Math.abs(current - target) >= 2) {
+      // Animated on macOS once visible; instant before the first show.
+      win.setContentSize(width, target, !firstFit);
+      // Growing must not push the bottom off the screen.
+      const bounds = win.getBounds();
+      const overflow = bounds.y + bounds.height - (workArea.y + workArea.height);
+      if (overflow > 0) win.setPosition(bounds.x, Math.max(workArea.y, bounds.y - overflow));
+    }
+    firstFit?.();
+  }
+
+  // ── What's new ──
+
+  let changelog: ChangelogEntry[] | null = null;
+
+  function whatsNewView(): WhatsNewView {
+    // Copied into dist/ by scripts/build.mjs, so it ships inside the app.
+    if (changelog === null) {
+      try {
+        changelog = parseChangelog(readFileSync(path.join(APP_ROOT, 'dist', 'CHANGELOG.md'), 'utf8'));
+      } catch {
+        changelog = [];
+      }
+    }
+    const update = getUpdateStatus();
+    const release = 'release' in update ? update.release : null;
+    const current = app.getVersion();
+    return { current, entries: whatsNew(changelog, current, { dev: DEV, update: release }) };
   }
 
   function notify(title: string, body: string): void {
@@ -437,6 +503,14 @@ function main(): void {
     handle(IPC.getUpdate, () => getUpdateStatus());
     handle(IPC.checkForUpdates, () => checkForUpdates());
     handle(IPC.installUpdate, () => installUpdate());
+    handle(IPC.getWhatsNew, () => whatsNewView());
+    handle(IPC.openReleases, () => shell.openExternal(ALL_RELEASES_PAGE));
+    // Needs the sending window, so not through handle().
+    ipcMain.handle(IPC.fitContent, (event, height: unknown) => {
+      if (!trusted(event)) throw new Error('untrusted sender');
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (win && typeof height === 'number' && Number.isFinite(height) && height > 0) fitContent(win, height);
+    });
   }
 }
 
