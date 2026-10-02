@@ -92,6 +92,13 @@ test('reports device info with a salted hardware hash', async () => {
     assert.match(a.hardwareIdHash, /^[0-9a-f]{64}$/);
     assert.notEqual(a.hardwareIdHash, b.hardwareIdHash, 'hash must not link across servers');
   }
+  // Device-type inputs (multi-app-pairing-plan.md §4.2–4.3).
+  assert.equal(typeof a.virtual, 'boolean');
+  if (a.platform === 'macos') {
+    assert.equal(a.chassisType, null);
+  } else if (a.chassisType !== null) {
+    assert.ok(Number.isInteger(a.chassisType) && a.chassisType >= 1 && a.chassisType <= 127);
+  }
 });
 
 test('deletes the key', async () => {
