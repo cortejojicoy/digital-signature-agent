@@ -60,6 +60,8 @@ struct DeviceInfo {
     std::string formFactor;     // "laptop" | "desktop" | "unknown"
     std::string hostname;
     std::string hardwareIdHash; // sha256_hex(salt || hardware uuid), "" if unavailable
+    int chassisType = 0;        // SMBIOS type 3 chassis type (Windows); 0 = unknown / not applicable
+    bool isVirtual = false;     // firmware reports a virtual machine
 };
 
 // Error codes surfaced to JS as `err.code`.
