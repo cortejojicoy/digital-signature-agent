@@ -199,5 +199,9 @@ signed builds; new pairings then use the keychain.
 The Electron fuses from plan §7.1 are set in [electron-builder.yml](electron-builder.yml).
 Updates: the agent reads the latest release (version, date, notes) from the
 GitHub Releases API, and installs from that release's `latest*.yml` feed.
-**Check for updates** is in the agent window and the tray menu. Free macOS
-builds and `npm run dev` open the release page instead of installing.
+**Check for updates** is in the agent window and the tray menu. Signed builds
+and Windows install through electron-updater. Free macOS builds update
+themselves the way `install.sh` installs (src/main/self-update.ts): download
+the `.zip`, check its SHA-512 against `latest-mac.yml` and its code signature,
+then swap the app bundle when the agent quits. Only `npm run dev`, or an app in
+a folder you can't write to, opens the release page instead.
