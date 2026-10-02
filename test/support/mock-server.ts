@@ -5,7 +5,8 @@
 // server" for trying the real Electron app (npm run mock-server). It is also
 // a reference for the package's Laravel implementation: every check the
 // package must make is here (proof verification, single-use link tokens,
-// request-proof replay and staleness, min_version, device binding).
+// request-proof replay and staleness, min_version, device binding, one
+// device per computer and app, blocked device types).
 //
 // Self-contained (node: imports only) so Node can run it directly with type
 // stripping.
@@ -27,6 +28,8 @@ export interface MockServerOptions {
   serverName?: string;
   minVersion?: string;
   requirePresence?: boolean;
+  /** Mirrors signature.devices.agent.blocked_device_types; virtual machines by default. */
+  blockedDeviceTypes?: string[];
   users?: MockUser[];
   now?: () => number;
 }
@@ -42,6 +45,8 @@ interface Pairing {
   claim?: Record<string, unknown>;
   deviceUuid?: string;
   tokenIssued?: boolean;
+  /** Same computer, same user: confirming updates this device instead of adding one. */
+  replacesDeviceUuid?: string;
 }
 
 export interface Device {
@@ -56,9 +61,12 @@ export interface Device {
   attested: boolean;
   formFactor: string;
   model: string;
-  hardwareIdHash: string;
+  hardwareIdHash: string | null;
+  deviceType: string;
+  virtual: boolean;
   agentVersion: string;
   revoked: boolean;
+  rebound: boolean;
 }
 
 export interface Job {
@@ -129,6 +137,9 @@ export class MockSigningServer {
   readonly salt = b64url(16);
   minVersion: string;
   requirePresence: boolean;
+  blockedDeviceTypes: string[];
+  /** The next DELETE /device answers 503, as if the server were unreachable. */
+  failNextUnpair = false;
   readonly users: MockUser[];
   readonly pairings = new Map<string, Pairing>();
   readonly devices = new Map<string, Device>();
@@ -145,6 +156,7 @@ export class MockSigningServer {
     this.serverName = options.serverName ?? 'Test Signing App';
     this.minVersion = options.minVersion ?? '0.0.0';
     this.requirePresence = options.requirePresence ?? false;
+    this.blockedDeviceTypes = options.blockedDeviceTypes ?? ['virtual_machine'];
     this.users = options.users ?? [{ id: '42', name: 'Juan dela Cruz' }];
     this.now = options.now ?? Date.now;
   }
@@ -190,10 +202,11 @@ export class MockSigningServer {
       return null;
     }
     const c = p.claim as Record<string, any>;
-    const device: Device = {
-      uuid: randomUUID(),
-      userId: p.userId,
-      label: String(c.device?.label ?? 'Computer'),
+    // Re-check under "the lock": another pairing may have taken this computer meanwhile.
+    const holder = this.activeDeviceFor(c.device?.hardware_id_hash ?? null);
+    if (holder && holder.userId !== p.userId) throw new Error('machine_already_paired');
+
+    const keys = {
       algorithm: c.algorithm,
       identityKey: c.identity_public_key,
       sessionKey: c.session_public_key,
@@ -202,14 +215,47 @@ export class MockSigningServer {
       attested: false, // phase 5: verify c.attestation against Microsoft TPM roots
       formFactor: c.device?.form_factor,
       model: c.device?.model,
-      hardwareIdHash: c.device?.hardware_id_hash,
+      deviceType: String(c.device?.device_type ?? 'other'),
+      virtual: !!c.device?.virtual,
       agentVersion: c.agent_version,
+    };
+    const existing = holder && holder.userId === p.userId ? holder : null;
+    if (existing) {
+      // Rebind: same uuid and label, new keys; the old token stops working.
+      Object.assign(existing, keys, { rebound: true });
+      for (const [hash, uuid] of this.tokens) if (uuid === existing.uuid) this.tokens.delete(hash);
+      p.status = 'confirmed';
+      p.deviceUuid = existing.uuid;
+      p.replacesDeviceUuid = existing.uuid;
+      return existing;
+    }
+
+    const device: Device = {
+      uuid: randomUUID(),
+      userId: p.userId,
+      label: String(c.device?.label ?? 'Computer'),
+      hardwareIdHash: c.device?.hardware_id_hash ?? null,
       revoked: false,
+      rebound: false,
+      ...keys,
     };
     this.devices.set(device.uuid, device);
     p.status = 'confirmed';
     p.deviceUuid = device.uuid;
     return device;
+  }
+
+  /** An admin's "Release computer" (§7.3). */
+  releaseDevice(uuid: string): void {
+    const device = this.devices.get(uuid);
+    if (device) device.revoked = true;
+    for (const [hash, owner] of this.tokens) if (owner === uuid) this.tokens.delete(hash);
+  }
+
+  /** The active agent device on this computer for this app, whoever owns it. */
+  private activeDeviceFor(hardwareIdHash: string | null): Device | undefined {
+    if (!hardwareIdHash) return undefined;
+    return [...this.devices.values()].find((d) => !d.revoked && d.hardwareIdHash === hardwareIdHash);
   }
 
   createJob(title: string, documentHash: string, userId = this.users[0].id): { uuid: string; linkToken: string; link: string } {
@@ -271,9 +317,16 @@ export class MockSigningServer {
       const device = this.authenticate(req, method, url.pathname + url.search, body);
       if (method === 'GET' && path === '/signature/agent/status') {
         const user = this.users.find((u) => u.id === device.userId)!;
-        return send(res, 200, { device: { uuid: device.uuid, label: device.label, status: 'active' }, user });
+        const others = [...this.devices.values()]
+          .filter((d) => d.userId === device.userId && d.uuid !== device.uuid && !d.revoked)
+          .map((d) => ({ uuid: d.uuid, label: d.label, device_type: d.deviceType, last_used_at: null }));
+        return send(res, 200, { device: { uuid: device.uuid, label: device.label, status: 'active' }, user, other_devices: others });
       }
       if (method === 'DELETE' && path === '/signature/agent/device') {
+        if (this.failNextUnpair) {
+          this.failNextUnpair = false;
+          throw new HttpError(503, 'unavailable', 'Service unavailable.');
+        }
         device.revoked = true;
         return send(res, 204, null);
       }
@@ -305,6 +358,7 @@ export class MockSigningServer {
       user_name: user.name,
       server: { id: this.serverId, name: this.serverName, origin: this.origin, salt: this.salt },
       require_presence: this.requirePresence,
+      blocked_device_types: this.blockedDeviceTypes,
       expires_at: new Date(p.expiresAt).toISOString(),
     };
   }
@@ -323,10 +377,23 @@ export class MockSigningServer {
     if (this.requirePresence && !c.user_presence) {
       throw new HttpError(422, 'presence_required', 'This server requires Touch ID or Windows Hello.');
     }
+    const type = String(c.device?.device_type ?? 'other');
+    if (this.blockedDeviceTypes.includes(type) || (c.device?.virtual && this.blockedDeviceTypes.includes('virtual_machine'))) {
+      throw new HttpError(422, 'device_type_not_allowed', 'This kind of device is not allowed to pair.');
+    }
+    // One active device per computer and app (§7.2). The error never says who holds it.
+    const holder = this.activeDeviceFor(c.device?.hardware_id_hash ?? null);
+    if (holder && holder.userId !== p.userId) {
+      throw new HttpError(409, 'machine_already_paired', 'This computer is already paired with another account.');
+    }
     p.status = 'awaiting_confirmation';
     p.claim = c;
     p.pollSecret = b64url(32);
-    return { status: p.status, poll_secret: p.pollSecret };
+    return {
+      status: p.status,
+      poll_secret: p.pollSecret,
+      existing_device: holder ? { uuid: holder.uuid, label: holder.label, device_type: holder.deviceType } : null,
+    };
   }
 
   private poll(uuid: string, json: { poll_secret?: string }) {
@@ -338,7 +405,12 @@ export class MockSigningServer {
       this.tokens.set(sha256(token), p.deviceUuid!);
       p.tokenIssued = true;
       const d = this.devices.get(p.deviceUuid!)!;
-      return { status: 'confirmed', device: { uuid: d.uuid, label: d.label }, token };
+      return {
+        status: 'confirmed',
+        device: { uuid: d.uuid, label: d.label, device_type: d.deviceType },
+        token,
+        rebound: p.replacesDeviceUuid !== undefined,
+      };
     }
     if (p.expiresAt < this.now()) p.status = 'expired';
     return { status: p.status };
@@ -446,11 +518,16 @@ function lanAddress(): string | null {
   return null;
 }
 
-// Standalone: node test/support/mock-server.ts [port] [--lan]
+// Standalone: node test/support/mock-server.ts [port] [--lan] [--allow-vm]
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const port = Number(args.find((a) => /^\d+$/.test(a)) ?? 8787);
-  const server = new MockSigningServer({ port, lan: args.includes('--lan') });
+  const server = new MockSigningServer({
+    port,
+    lan: args.includes('--lan'),
+    // Virtual machines are refused by default, like the package.
+    blockedDeviceTypes: args.includes('--allow-vm') ? [] : undefined,
+  });
   const origin = await server.listen();
   const { uuid, userCode, link } = server.startPairing();
   console.log(`Mock signing server on ${origin}`);

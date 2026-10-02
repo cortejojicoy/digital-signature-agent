@@ -1,0 +1,27 @@
+{
+  "description": "The device-type catalogue (multi-app-pairing-plan.md §4.1), in order, with each type's category. Consumed by the agent's device-type.ts tests and the package's DeviceType enum tests; both sides must list exactly these.",
+  "types": [
+    { "type": "macbook", "category": "computer" },
+    { "type": "macbook_air", "category": "computer" },
+    { "type": "macbook_pro", "category": "computer" },
+    { "type": "imac", "category": "computer" },
+    { "type": "mac_mini", "category": "computer" },
+    { "type": "mac_studio", "category": "computer" },
+    { "type": "mac_pro", "category": "computer" },
+    { "type": "laptop", "category": "computer" },
+    { "type": "convertible", "category": "computer" },
+    { "type": "desktop", "category": "computer" },
+    { "type": "all_in_one", "category": "computer" },
+    { "type": "mini_pc", "category": "computer" },
+    { "type": "server", "category": "computer" },
+    { "type": "chromebook", "category": "computer" },
+    { "type": "tablet", "category": "tablet" },
+    { "type": "ipad", "category": "tablet" },
+    { "type": "android_tablet", "category": "tablet" },
+    { "type": "iphone", "category": "phone" },
+    { "type": "android", "category": "phone" },
+    { "type": "phone", "category": "phone" },
+    { "type": "virtual_machine", "category": "virtual" },
+    { "type": "other", "category": "other" }
+  ]
+}

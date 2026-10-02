@@ -15,6 +15,8 @@ export interface MemoryKeyStoreOptions {
   presence?: boolean;
   /** Use RSA for identity keys, like Windows Hello. */
   rsaIdentity?: boolean;
+  /** Overrides for what deviceInfo() reports, e.g. a VM or a Windows machine. */
+  device?: Partial<DeviceInfo> & { hardwareUuid?: string };
 }
 
 export class MemoryKeyStore implements KeyStore {
@@ -78,6 +80,7 @@ export class MemoryKeyStore implements KeyStore {
   }
 
   async deviceInfo(salt: string): Promise<DeviceInfo> {
+    const { hardwareUuid = 'TEST-UUID', ...device } = this.options.device ?? {};
     return {
       platform: 'macos',
       osVersion: '15.1.0',
@@ -85,7 +88,11 @@ export class MemoryKeyStore implements KeyStore {
       modelIdentifier: 'Mac15,3',
       formFactor: 'laptop',
       hostname: 'Juan’s MacBook Pro',
-      hardwareIdHash: createHash('sha256').update(`${salt}TEST-UUID`).digest('hex'),
+      // Like the native module: "" when there's no usable hardware uuid.
+      hardwareIdHash: hardwareUuid ? createHash('sha256').update(`${salt}${hardwareUuid}`).digest('hex') : '',
+      chassisType: null,
+      virtual: false,
+      ...device,
     };
   }
 }

@@ -69,4 +69,58 @@ describe('Store', () => {
     expect(store.get('test-server')).toBeNull();
     expect(store.token('test-server')).toBeNull();
   });
+
+  it('loads a servers.json written before device types existed', async () => {
+    const store = new Store(dir, fakeCipher);
+    await store.load();
+    await store.save(server, 't');
+    const again = new Store(dir, fakeCipher);
+    await again.load();
+    expect(again.get('test-server')?.deviceType).toBeUndefined();
+  });
+
+  it('keeps one signature per app: three apps side by side, unpairing one leaves the others', async () => {
+    const store = new Store(dir, fakeCipher);
+    await store.load();
+    for (const id of ['amp', 'sims', 'tks']) await store.save({ ...server, id, origin: `https://${id}.example.ph` }, `${id}-token`);
+    await store.remove('sims');
+    expect(store.list().map((s) => s.id)).toEqual(['amp', 'tks']);
+    expect(store.token('amp')).toBe('amp-token');
+    expect(store.token('tks')).toBe('tks-token');
+  });
+
+  it('updates a pairing without touching its token', async () => {
+    const store = new Store(dir, fakeCipher);
+    await store.load();
+    await store.save(server, 'the-token');
+    await store.update({ ...server, deviceType: 'macbook_pro' });
+    expect(store.get('test-server')?.deviceType).toBe('macbook_pro');
+    expect(store.token('test-server')).toBe('the-token');
+    await expect(store.update({ ...server, id: 'nope' })).rejects.toThrow(/no pairing/);
+  });
+
+  it('queues revokes with their token sealed, across loads', async () => {
+    const store = new Store(dir, fakeCipher);
+    await store.load();
+    const revoke = {
+      serverId: 'test-server',
+      origin: server.origin,
+      userId: '42',
+      deviceUuid: 'd',
+      sessionKeyId: 'ds.x.session',
+      queuedAt: '2026-10-02T00:00:00.000Z',
+    };
+    await store.queueRevoke(revoke, 'revoke-token');
+    expect(await readFile(path.join(dir, 'pending-revokes.json'), 'utf8')).not.toContain('revoke-token');
+
+    const again = new Store(dir, fakeCipher);
+    await again.load();
+    expect(again.pendingRevokes()).toEqual([revoke]);
+    expect(again.pendingRevokes('other')).toEqual([]);
+    expect(again.revokeToken('d')).toBe('revoke-token');
+
+    await again.dropRevoke('d');
+    expect(again.pendingRevokes()).toEqual([]);
+    expect(again.revokeToken('d')).toBeNull();
+  });
 });
