@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { StatusView as Status, UpdateView } from '../../shared/ipc';
 import { IconButton, type IconName } from '../icons';
 import { deviceTypeLabel, presenceLabel, protectionLabel } from '../labels';
+import { WhatsNewDialog } from './WhatsNew';
 
 export function StatusView({ onPair }: { onPair: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
@@ -136,6 +137,8 @@ export function StatusView({ onPair }: { onPair: () => void }) {
 // into Download / Restart when there's an update, and a short status word.
 function VersionRow({ version }: { version: string }) {
   const [update, setUpdate] = useState<UpdateView>({ state: 'idle' });
+  const [showNotes, setShowNotes] = useState(false);
+  const closeNotes = useCallback(() => setShowNotes(false), []);
 
   useEffect(() => {
     void window.agent.getUpdate().then(setUpdate);
@@ -205,7 +208,9 @@ function VersionRow({ version }: { version: string }) {
 
   return (
     <div className="version-row" aria-live="polite">
-      <span className="muted">Version {version}</span>
+      <button type="button" className="version-link" title="What's new" onClick={() => setShowNotes(true)}>
+        Version {version}
+      </button>
       {note && (
         <span
           className={update.state === 'error' ? 'error small' : button.accent ? 'accent small' : 'muted small'}
@@ -223,6 +228,7 @@ function VersionRow({ version }: { version: string }) {
         disabled={busy}
         onClick={button.onClick}
       />
+      {showNotes && <WhatsNewDialog update={update} onClose={closeNotes} />}
     </div>
   );
 }
