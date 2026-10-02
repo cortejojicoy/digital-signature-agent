@@ -1,12 +1,13 @@
 // Composes the key store, storage, pairing and jobs. The Electron shell
 // (index.ts) drives this; tests drive it directly with a software key store
 // and a mock server.
-import { AgentApi, type Credentials, type FetchLike } from './api';
+import { AgentApi, ApiError, type Credentials, type FetchLike } from './api';
+import { detectDeviceType, isDeviceType, type DeviceType } from './device-type';
 import { JobRunner, type ConfirmRequest, type JobOutcome } from './jobs';
 import type { Capabilities, KeyStore } from './keystore';
 import { deleteKeys, pair, type PairOptions } from './pairing';
 import { normalizeOrigin, normalizeUserCode, parseLink, type OriginPolicy, type PairLink } from './protocol';
-import type { PairedServer, Store } from './store';
+import type { PairedServer, PendingRevoke, Store } from './store';
 
 export interface AgentOptions extends OriginPolicy {
   keystore: KeyStore;
@@ -33,11 +34,19 @@ export interface ServerSummary {
   userPresence: boolean;
   pairedAt: string;
   insecure: boolean;
+  deviceType: DeviceType;
+  /** The same account's other signing devices, as the server last reported them (§7.4). */
+  otherDevices: Array<{ label: string; deviceType: DeviceType | null }>;
 }
+
+const OTHER_DEVICES_TTL_MS = 60_000;
 
 export class Agent {
   readonly jobs: JobRunner;
   private localNetwork: boolean;
+  private localType: Promise<DeviceType> | null = null;
+  private readonly otherDevices = new Map<string, ServerSummary['otherDevices']>();
+  private otherDevicesAt = 0;
 
   constructor(private readonly options: AgentOptions) {
     this.localNetwork = options.allowInsecureLocalNetwork === true;
@@ -87,6 +96,29 @@ export class Agent {
     return this.options.keystore.capabilities();
   }
 
+  /**
+   * Start-up housekeeping: give pairings made before device types existed a
+   * type (§5), and retry revokes left over from an offline unpair (§7.3).
+   */
+  async init(): Promise<void> {
+    const untyped = this.options.store.list().filter((s) => !s.deviceType);
+    if (untyped.length > 0) {
+      const type = await this.thisDeviceType();
+      for (const server of untyped) await this.options.store.update({ ...server, deviceType: type });
+      this.options.onServersChanged?.();
+    }
+    await this.retryRevokes();
+  }
+
+  /** What this computer is, detected once per run. */
+  thisDeviceType(): Promise<DeviceType> {
+    this.localType ??= this.options.keystore
+      .deviceInfo('')
+      .then(detectDeviceType)
+      .catch((): DeviceType => 'other');
+    return this.localType;
+  }
+
   servers(): ServerSummary[] {
     return this.options.store.list().map((s) => ({
       id: s.id,
@@ -98,7 +130,37 @@ export class Agent {
       userPresence: s.userPresence,
       pairedAt: s.pairedAt,
       insecure: s.origin.startsWith('http:'),
+      deviceType: s.deviceType ?? 'other',
+      otherDevices: this.otherDevices.get(s.id) ?? [],
     }));
+  }
+
+  /**
+   * Asks each paired app for the account's other devices (§7.4). Best
+   * effort and throttled: the status window calls it whenever it opens.
+   * Resolves true when something changed.
+   */
+  async refreshOtherDevices(force = false): Promise<boolean> {
+    if (!force && Date.now() - this.otherDevicesAt < OTHER_DEVICES_TTL_MS) return false;
+    this.otherDevicesAt = Date.now();
+    let changed = false;
+    for (const server of this.options.store.list()) {
+      try {
+        const status = await this.apiFor(server.origin).status(this.credentialsFor(server));
+        const others = (status.other_devices ?? []).map((d) => ({
+          label: String(d.label ?? ''),
+          deviceType: isDeviceType(d.device_type) ? d.device_type : null,
+        }));
+        if (JSON.stringify(others) !== JSON.stringify(this.otherDevices.get(server.id) ?? [])) changed = true;
+        this.otherDevices.set(server.id, others);
+      } catch (err) {
+        if (err instanceof ApiError && err.unauthorized) {
+          await this.forget(server);
+          changed = true;
+        }
+      }
+    }
+    return changed;
   }
 
   async pair(originInput: string, codeInput: string, opts: PairOptions = {}): Promise<PairedServer> {
@@ -112,6 +174,10 @@ export class Agent {
     }
     const code = normalizeUserCode(codeInput);
     if (!code) throw new Error('Enter the 8-character code, e.g. K7QM-2XPD');
+
+    // An unpair that never reached this server still holds the computer
+    // there; finish it first, or a different account would be refused.
+    await this.retryRevokes(origin);
 
     const paired = await pair(
       {
@@ -142,21 +208,78 @@ export class Agent {
     return outcome;
   }
 
-  /** Revokes the token on the server (best effort) and deletes local keys. */
+  /**
+   * Revokes the device on the server and deletes the local keys. If the
+   * server can't be reached, the pairing still goes away here at once (the
+   * signing key with it), and the revoke is queued and retried (§7.3):
+   * otherwise the server would go on counting this computer as paired, and
+   * refuse anyone else for this app.
+   */
   async unpair(serverId: string): Promise<void> {
     const server = this.options.store.get(serverId);
     if (!server) return;
-    // If the server is unreachable, still remove locally; the device can
-    // then be revoked from "My signing devices" on the web.
-    await Promise.resolve()
-      .then(() => this.apiFor(server.origin).unpair(this.credentialsFor(server)))
-      .catch(() => {});
+    const token = this.options.store.token(server.id);
+    try {
+      await this.apiFor(server.origin).unpair(this.credentialsFor(server));
+    } catch (err) {
+      const alreadyGone = err instanceof ApiError && err.unauthorized;
+      if (!alreadyGone && token) {
+        await this.options.store.queueRevoke(
+          {
+            serverId: server.id,
+            origin: server.origin,
+            userId: server.userId,
+            deviceUuid: server.deviceUuid,
+            sessionKeyId: server.sessionKeyId,
+            queuedAt: new Date().toISOString(),
+          },
+          token,
+        );
+        // Keep only the session key: it authenticates the retry, and can't sign documents.
+        await deleteKeys(this.options.keystore, [server.identityKeyId]);
+        await this.options.store.remove(server.id);
+        this.otherDevices.delete(server.id);
+        this.options.onServersChanged?.();
+        return;
+      }
+    }
     await this.forget(server);
+  }
+
+  /**
+   * Retries queued revokes, optionally only those for one origin. A revoke is
+   * done when the server accepts it, or answers 401 (already revoked on the
+   * web, or by an admin). Anything else is left for the next try.
+   */
+  async retryRevokes(origin?: string): Promise<void> {
+    for (const revoke of this.options.store.pendingRevokes()) {
+      if (origin !== undefined && revoke.origin !== origin) continue;
+      const token = this.options.store.revokeToken(revoke.deviceUuid);
+      // A token that no longer decrypts can never authenticate: give up on it.
+      if (token) {
+        try {
+          await this.apiFor(revoke.origin).unpair(this.revokeCredentials(revoke, token));
+        } catch (err) {
+          if (!(err instanceof ApiError && err.unauthorized)) continue;
+        }
+      }
+      await deleteKeys(this.options.keystore, [revoke.sessionKeyId]);
+      await this.options.store.dropRevoke(revoke.deviceUuid);
+    }
+  }
+
+  private revokeCredentials(revoke: PendingRevoke, token: string): Credentials {
+    return {
+      token,
+      userId: revoke.userId,
+      signWithSessionKey: (message) => this.options.keystore.sign(revoke.sessionKeyId, message, 'authenticate with the server'),
+    };
   }
 
   private async forget(server: PairedServer): Promise<void> {
     await deleteKeys(this.options.keystore, [server.identityKeyId, server.sessionKeyId]);
     await this.options.store.remove(server.id);
+    this.otherDevices.delete(server.id);
     this.options.onServersChanged?.();
   }
 }
