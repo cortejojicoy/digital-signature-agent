@@ -7,6 +7,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { canonicalMessage, requestPayloadHash } from './canonical';
+import type { DeviceType } from './device-type';
 import { normalizeOrigin, type OriginPolicy } from './protocol';
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -26,6 +27,8 @@ export interface PairingLookup {
   user_name?: string;
   server: ServerInfo;
   require_presence: boolean;
+  /** Device types this server refuses to pair (multi-app-pairing-plan.md §4.6). Older servers omit it. */
+  blocked_device_types?: string[];
   expires_at: string;
 }
 
@@ -44,15 +47,38 @@ export interface PairingClaim {
     model_identifier: string;
     form_factor: string;
     label: string;
-    hardware_id_hash: string;
+    /** null when the firmware has no usable hardware uuid: never the hash of "" (§3). */
+    hardware_id_hash: string | null;
+    device_type: DeviceType;
+    chassis_type: number | null;
+    virtual: boolean;
   };
   agent_version: string;
   proof: string;
 }
 
+/** The server's device for this computer and user, which a re-pair updates (§7.2). */
+export interface ExistingDevice {
+  uuid: string;
+  label: string;
+  device_type?: string;
+}
+
+export interface PairingClaimResult {
+  status: string;
+  poll_secret: string;
+  existing_device?: ExistingDevice | null;
+}
+
 export type PairingStatus =
   | { status: 'awaiting_confirmation' }
-  | { status: 'confirmed'; device: { uuid: string; label: string }; token: string }
+  | {
+      status: 'confirmed';
+      device: { uuid: string; label: string; device_type?: string };
+      token: string;
+      /** true when the server updated an existing device instead of adding one. */
+      rebound?: boolean;
+    }
   | { status: 'rejected' | 'expired' };
 
 export interface AgentJob {
@@ -67,9 +93,18 @@ export interface AgentJob {
   expires_at: string;
 }
 
+export interface OtherDevice {
+  uuid: string;
+  label: string;
+  device_type?: string;
+  last_used_at?: string | null;
+}
+
 export interface AgentStatus {
   device: { uuid: string; label: string; status: string };
   user: { id: string; name: string };
+  /** The same account's other active signing devices (§7.4). Older servers omit it. */
+  other_devices?: OtherDevice[];
 }
 
 export class ApiError extends Error {
@@ -132,7 +167,7 @@ export class AgentApi {
     return this.request('POST', `${BASE}/pairings/lookup`, { user_code: userCode });
   }
 
-  claimPairing(pairing: string, claim: PairingClaim): Promise<{ status: string; poll_secret: string }> {
+  claimPairing(pairing: string, claim: PairingClaim): Promise<PairingClaimResult> {
     return this.request('POST', `${BASE}/pairings/${encodeURIComponent(pairing)}/claim`, claim);
   }
 
