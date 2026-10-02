@@ -177,4 +177,20 @@ jobs:
           downloaded file directly, allow it once: macOS → System Settings → Privacy & Security → Open Anyway;
           Windows → SmartScreen → More info → Run anyway."
           fi
+          # What's new: this version's bullets from CHANGELOG.md (or Unreleased,
+          # if it wasn't renamed before tagging). The agent shows them for an
+          # available update; only top-level bullets count.
+          changes=$(awk -v v="${GITHUB_REF_NAME#v}" '
+            /^## / { if (found) exit; found = ($2 == v || $2 == "v" v); next }
+            found && /^[-*+] / { print }' CHANGELOG.md)
+          if [ -z "$changes" ]; then
+            changes=$(awk '/^## / { if (found) exit; found = ($2 == "Unreleased"); next }
+              found && /^[-*+] / { print }' CHANGELOG.md)
+          fi
+          if [ -n "$changes" ]; then
+            notes="## What's new
+          $changes
+
+          $notes"
+          fi
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes "$notes"
