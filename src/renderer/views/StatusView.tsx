@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { StatusView as Status, UpdateView } from '../../shared/ipc';
 import { IconButton, type IconName } from '../icons';
 import { deviceTypeLabel, presenceLabel, protectionLabel } from '../labels';
-import { WhatsNewDialog } from './WhatsNew';
+import { AboutDialog } from './AboutDialog';
 
 export function StatusView({ onPair }: { onPair: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
@@ -37,7 +37,7 @@ export function StatusView({ onPair }: { onPair: () => void }) {
     <main className="page">
       <header className="page-header">
         <h1>Kukux Sign Agent</h1>
-        <VersionRow version={status.version} />
+        <VersionRow version={status.version} platform={status.platform} capabilities={status.capabilities} />
       </header>
 
       <section className="card">
@@ -135,7 +135,15 @@ export function StatusView({ onPair }: { onPair: () => void }) {
 
 // The version line doubles as the update control: one small icon that turns
 // into Download / Restart when there's an update, and a short status word.
-function VersionRow({ version }: { version: string }) {
+function VersionRow({
+  version,
+  platform,
+  capabilities,
+}: {
+  version: string;
+  platform: Status['platform'];
+  capabilities: Status['capabilities'];
+}) {
   const [update, setUpdate] = useState<UpdateView>({ state: 'idle' });
   const [showNotes, setShowNotes] = useState(false);
   const closeNotes = useCallback(() => setShowNotes(false), []);
@@ -208,7 +216,7 @@ function VersionRow({ version }: { version: string }) {
 
   return (
     <div className="version-row" aria-live="polite">
-      <button type="button" className="version-link" title="What's new" onClick={() => setShowNotes(true)}>
+      <button type="button" className="version-link" title="About this app" onClick={() => setShowNotes(true)}>
         Version {version}
       </button>
       {note && (
@@ -228,7 +236,9 @@ function VersionRow({ version }: { version: string }) {
         disabled={busy}
         onClick={button.onClick}
       />
-      {showNotes && <WhatsNewDialog update={update} onClose={closeNotes} />}
+      {showNotes && (
+        <AboutDialog version={version} platform={platform} capabilities={capabilities} update={update} onClose={closeNotes} />
+      )}
     </div>
   );
 }
