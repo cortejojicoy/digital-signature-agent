@@ -53,5 +53,7 @@ await Promise.all([
 ]);
 
 await copyFile('src/renderer/index.html', 'dist/renderer/index.html');
+// Shown in What's new (src/main/index.ts reads it from dist/).
+await copyFile('CHANGELOG.md', 'dist/CHANGELOG.md');
 
 if (watch) console.log('watch mode is not implemented; re-run npm run build');
