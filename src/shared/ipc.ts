@@ -1,10 +1,14 @@
 // IPC contract between the main process and the renderer (desktop-agent-plan.md §7.1).
 // Deliberately narrow: there is no generic sign(bytes).
+import type { DeviceType } from '../main/device-type';
+
+export type { DeviceType };
 
 export const IPC = {
   getStatus: 'agent:get-status',
   startPairing: 'agent:start-pairing',
   cancelPairing: 'agent:cancel-pairing',
+  confirmRepair: 'agent:confirm-repair',
   getJob: 'agent:get-job',
   approveJob: 'agent:approve-job',
   rejectJob: 'agent:reject-job',
@@ -34,6 +38,9 @@ export interface ServerView {
   pairedAt: string;
   /** Paired over plain http:// (Developer mode). */
   insecure: boolean;
+  deviceType: DeviceType;
+  /** The same account's other signing devices for this app. */
+  otherDevices: Array<{ label: string; deviceType: DeviceType | null }>;
 }
 
 export interface StatusView {
@@ -65,11 +72,22 @@ export type UpdateView =
 
 export type PairingProgressView =
   | { stage: 'looking_up' }
+  /** Answer with confirmRepair(true | false). */
+  | { stage: 'already_paired_locally'; serverName: string; userName: string }
   | { stage: 'creating_keys'; serverName: string }
-  | { stage: 'awaiting_confirmation'; serverName: string; origin: string; deviceLabel: string }
-  | { stage: 'paired'; serverName: string };
+  | {
+      stage: 'awaiting_confirmation';
+      serverName: string;
+      origin: string;
+      deviceLabel: string;
+      existingDevice?: { label: string; deviceType?: DeviceType };
+    }
+  | { stage: 'paired'; serverName: string; rebound: boolean };
 
-export type PairingResult = { ok: true; serverName: string } | { ok: false; error: string };
+export type PairingResult =
+  | { ok: true; serverName: string; rebound: boolean }
+  /** `serverId` with code app_already_paired: the pairing to unpair first. */
+  | { ok: false; error: string; code?: string; serverId?: string; serverName?: string };
 
 export interface JobView {
   id: string;
@@ -81,6 +99,7 @@ export interface JobView {
   expiresAt: string;
   protection: ProtectionLevel;
   userPresence: boolean;
+  deviceType: DeviceType;
 }
 
 export type JobState =
@@ -94,6 +113,8 @@ export interface AgentBridge {
   getStatus(): Promise<StatusView>;
   startPairing(input: { origin: string; code: string }): Promise<PairingResult>;
   cancelPairing(): Promise<void>;
+  /** Answers an `already_paired_locally` progress: true re-pairs, false stops. */
+  confirmRepair(repair: boolean): Promise<void>;
   getJob(id: string): Promise<JobView | null>;
   approveJob(id: string): Promise<void>;
   rejectJob(id: string): Promise<void>;
