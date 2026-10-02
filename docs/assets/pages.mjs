@@ -460,6 +460,12 @@ ${steps([
   '<strong>Web</strong> asks the user to confirm the computer.',
   '<strong>Agent</strong> polls and receives its token once → <a href="#/api/http/post-pairings-poll"><code>POST /pairings/{id}/poll</code></a>',
 ])}
+<p><strong>One signature per app, per computer.</strong> A computer can be paired with many apps, but holds only one
+account’s signature for each. Pairing a different account for an app on the same computer is refused: by the agent
+before it creates any key (<code>app_already_paired</code>), and by the server at claim
+(<code>409 machine_already_paired</code>, matched on <code>hardware_id_hash</code>). The same account pairing again
+updates its existing device in place: same uuid and history, new keys (<code>rebound: true</code>). Virtual machines are
+refused by default (<code>422 device_type_not_allowed</code>).</p>
 ${httpCall({
   method: 'POST',
   path: '/signature/agent/pairings/lookup',
@@ -470,6 +476,7 @@ ${httpCall({
   "user_id": "42",
   "server": { "id": "dict", "name": "DICT Signing", "origin": "https://sign.dict.gov.ph", "salt": "…" },
   "require_presence": true,
+  "blocked_device_types": ["virtual_machine"],
   "expires_at": "2026-10-01T09:10:00Z"
 }`,
 })}
@@ -549,7 +556,11 @@ public function handle(Request $request, Closure $next)
   <li><code>lookup</code>: unknown, used or expired code → <code>404 invalid_code</code>. Throttle hard.</li>
   <li><code>server.origin</code> must equal the URL the agent called. <code>server.id</code> must never change.</li>
   <li><code>claim</code>: verify the <code>register_agent</code> proof; if presence is required and missing → <code>422 presence_required</code>.</li>
-  <li><code>poll</code>: issue the token once, store only its hash. Later polls → <code>409 token_already_issued</code>.</li>
+  <li><code>claim</code>: a blocked <code>device_type</code>, or <code>virtual: true</code> while VMs are blocked → <code>422 device_type_not_allowed</code>.</li>
+  <li><code>claim</code>: another account’s active agent device with the same <code>hardware_id_hash</code> → <code>409 machine_already_paired</code>, without naming them. The same account’s → return it as <code>existing_device</code>.</li>
+  <li><code>confirm</code>: check the computer again under a lock, and back it with a unique index on the hash of active agent devices. Same account → update that device (new keys, old token revoked).</li>
+  <li><code>poll</code>: issue the token once, store only its hash. Later polls → <code>409 token_already_issued</code>. Include <code>rebound</code>.</li>
+  <li><code>DELETE /device</code> may arrive late: the agent retries revokes that failed offline. A 401 tells it the device is already gone.</li>
 </ul>
 
 <h2 id="job-checks">Job checks</h2>
@@ -567,6 +578,7 @@ ${editor('config/signature.php', 'php', r`
     'require_presence' => true,
     'job_ttl'          => 300,
     'pairing_ttl'      => 600,
+    'blocked_device_types' => ['virtual_machine'],
 ],`)}`,
   },
 ];
