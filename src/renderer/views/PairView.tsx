@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
-import type { PairingProgressView } from '../../shared/ipc';
+import type { PairingProgressView, PairingResult, ServerView } from '../../shared/ipc';
 import { IconButton } from '../icons';
 
 interface Props {
@@ -21,15 +21,43 @@ function fromPastedLink(text: string): { origin: string; code: string } | null {
   }
 }
 
+// Loose match for the "already paired" notice only; the main process decides.
+function sameOrigin(a: string, b: string): boolean {
+  const norm = (v: string) => v.trim().toLowerCase().replace(/\/+$/, '');
+  return norm(a) !== '' && norm(a) === norm(b);
+}
+
+type Failure = Extract<PairingResult, { ok: false }>;
+
 export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props) {
   const [origin, setOrigin] = useState(initialOrigin);
   const [code, setCode] = useState(initialCode);
   const [progress, setProgress] = useState<PairingProgressView | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
   const [running, setRunning] = useState(false);
-  const [pairedWith, setPairedWith] = useState<string | null>(null);
+  const [paired, setPaired] = useState<{ serverName: string; rebound: boolean } | null>(null);
+  const [servers, setServers] = useState<ServerView[]>([]);
+  const [unpairing, setUnpairing] = useState(false);
 
   useEffect(() => window.agent.onPairingProgress(setProgress), []);
+  useEffect(() => {
+    const load = () => void window.agent.getStatus().then((s) => setServers(s.servers));
+    load();
+    return window.agent.onStatusChanged(load);
+  }, []);
+
+  // One signature per app on this computer: say so before the user submits.
+  const holder = servers.find((s) => sameOrigin(s.origin, origin));
+
+  const unpair = async (serverId: string) => {
+    setUnpairing(true);
+    try {
+      await window.agent.unpair(serverId);
+      setFailure(null);
+    } finally {
+      setUnpairing(false);
+    }
+  };
 
   const applyPaste = (value: string, set: (v: string) => void) => {
     const link = fromPastedLink(value);
@@ -43,21 +71,24 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    setError(null);
+    setFailure(null);
     setProgress(null);
     setRunning(true);
     const result = await window.agent.startPairing({ origin, code });
     setRunning(false);
-    if (result.ok) setPairedWith(result.serverName);
-    else setError(result.error);
+    if (result.ok) setPaired({ serverName: result.serverName, rebound: result.rebound });
+    else setFailure(result);
   };
 
-  if (pairedWith) {
+  if (paired) {
     return (
       <main className="page">
         <section className="card center">
           <div className="big-check" aria-hidden="true">✓</div>
-          <h1>Paired with {pairedWith}</h1>
+          <h1>
+            {paired.rebound ? 'Re-paired' : 'Paired'} with {paired.serverName}
+          </h1>
+          {paired.rebound && <p className="muted">Your existing device was updated with new keys.</p>}
           <p className="muted">Choose “Sign with this computer” in the web app.</p>
           <IconButton icon="check" label="Done" variant="primary" tip="above" onClick={onDone} autoFocus />
         </section>
@@ -95,6 +126,21 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
             Opened from a link. Continue only if you use <span className="mono">{initialOrigin}</span>.
           </p>
         )}
+        {holder && !running && (
+          <div className="warning small">
+            <p>
+              This computer already holds {holder.userName ? `${holder.userName}'s` : 'a'} signature for {holder.name}. Unpair
+              it to use a different account, or continue to re-pair {holder.userName ? `${holder.userName}'s` : 'it'}.
+            </p>
+            <IconButton
+              icon="unlink"
+              label={unpairing ? 'Unpairing…' : `Unpair ${holder.name}`}
+              tip="above"
+              disabled={unpairing}
+              onClick={() => void unpair(holder.id)}
+            />
+          </div>
+        )}
         <label className="field">
           <span>Pairing code</span>
           <input
@@ -110,11 +156,39 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
           />
         </label>
 
-        {progress && running && <ProgressLine progress={progress} />}
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
+        {progress && running && progress.stage === 'already_paired_locally' ? (
+          <div className="warning small" role="alertdialog" aria-label="Already paired">
+            <p>
+              Your {progress.serverName} signature is already on this computer
+              {progress.userName ? ` (${progress.userName})` : ''}. Re-pair it with new keys?
+            </p>
+            <div className="actions">
+              <IconButton icon="x" label="Keep the current pairing" tip="above" onClick={() => void window.agent.confirmRepair(false)} />
+              <IconButton
+                icon="refresh"
+                label="Re-pair with new keys"
+                variant="primary"
+                tip="above"
+                onClick={() => void window.agent.confirmRepair(true)}
+              />
+            </div>
+          </div>
+        ) : (
+          progress && running && <ProgressLine progress={progress} />
+        )}
+        {failure && (
+          <div className="error" role="alert">
+            <p>{failure.error}</p>
+            {failure.code === 'app_already_paired' && failure.serverId && (
+              <IconButton
+                icon="unlink"
+                label={unpairing ? 'Unpairing…' : `Unpair ${failure.serverName ?? 'that app'}`}
+                tip="above"
+                disabled={unpairing}
+                onClick={() => void unpair(failure.serverId!)}
+              />
+            )}
+          </div>
         )}
 
         <div className="actions">
@@ -140,7 +214,15 @@ function ProgressLine({ progress }: { progress: PairingProgressView }) {
     case 'awaiting_confirmation':
       return (
         <p className="progress">
-          Confirm <strong>“{progress.deviceLabel}”</strong> in the web app.
+          {progress.existingDevice ? (
+            <>
+              Updating your existing device <strong>“{progress.existingDevice.label}”</strong>. Confirm in the web app.
+            </>
+          ) : (
+            <>
+              Confirm <strong>“{progress.deviceLabel}”</strong> in the web app.
+            </>
+          )}
         </p>
       );
     default:

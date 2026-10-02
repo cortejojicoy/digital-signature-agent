@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 import type { JobState, JobView } from '../../shared/ipc';
 import { Icon } from '../icons';
-import { currentPlatform, presenceLabel, protectionLabel } from '../labels';
+import { currentPlatform, deviceTypeLabel, presenceLabel, protectionLabel } from '../labels';
 
 const ARM_DELAY_MS = 1000;
 
@@ -119,7 +119,7 @@ export function ConfirmView({ jobId }: { jobId: string }) {
           <dd>{PURPOSES[job.purpose] ?? job.purpose}</dd>
           <dt>Key</dt>
           <dd>
-            {protectionLabel(job.protection)} · {presenceLabel(platform, job.userPresence)}
+            {deviceTypeLabel(job.deviceType)} · {protectionLabel(job.protection)} · {presenceLabel(platform, job.userPresence)}
           </dd>
         </dl>
       </section>

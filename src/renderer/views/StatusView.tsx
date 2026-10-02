@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { StatusView as Status, UpdateView } from '../../shared/ipc';
 import { IconButton, type IconName } from '../icons';
-import { presenceLabel, protectionLabel } from '../labels';
+import { deviceTypeLabel, presenceLabel, protectionLabel } from '../labels';
 
 export function StatusView({ onPair }: { onPair: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
@@ -62,6 +62,7 @@ export function StatusView({ onPair }: { onPair: () => void }) {
           <h2>Paired apps</h2>
           <IconButton icon="plus" label="Pair with an app" variant="primary" onClick={onPair} />
         </div>
+        <p className="muted small">One signature per app on this computer. To use another account for an app, unpair it first.</p>
         {status.servers.length === 0 ? (
           <p className="muted">
             None yet. In the web app, open <strong>My signing devices → Pair desktop agent</strong>.
@@ -77,8 +78,25 @@ export function StatusView({ onPair }: { onPair: () => void }) {
                   </div>
                   <div className="mono muted">{s.origin}</div>
                   <div className="muted small">
-                    {[s.deviceLabel, protectionLabel(s.protection), s.userName].filter(Boolean).join(' · ')}
+                    {[s.userName, s.deviceLabel, deviceTypeLabel(s.deviceType), protectionLabel(s.protection)]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </div>
+                  {s.otherDevices.length > 0 && (
+                    <details className="other-devices small">
+                      <summary className="muted">
+                        Also paired on {s.otherDevices.length} other {s.otherDevices.length === 1 ? 'device' : 'devices'}
+                      </summary>
+                      <ul>
+                        {s.otherDevices.map((d, i) => (
+                          <li key={i} className="muted">
+                            {d.label}
+                            {d.deviceType ? ` · ${deviceTypeLabel(d.deviceType)}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
                 </div>
                 <IconButton
                   icon="unlink"
