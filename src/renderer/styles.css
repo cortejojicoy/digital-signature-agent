@@ -530,37 +530,34 @@ div.error > p {
   font-size: 13px;
 }
 
-.badge-quiet {
-  background: transparent;
+.dialog-section {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--muted);
-  border: 1px solid var(--border);
 }
 
-.release-list {
+.feature-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-}
-
-.release-head {
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 
-.release-date {
-  margin-left: auto;
+.feature-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 
-.release-notes {
-  margin: 6px 0 0;
-  padding-left: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.feature-list svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent);
 }
 
 .accent {
