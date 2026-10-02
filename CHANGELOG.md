@@ -1,8 +1,7 @@
 # Changelog
 
-Short and plain: what changed for people using the agent. The app shows these
-in **What's new** (click the version), and the release workflow copies a
-version's bullets into its GitHub release.
+Short and plain: what changed for people using the agent. The release
+workflow copies a version's bullets into its GitHub release.
 
 When tagging a release, rename `Unreleased` to the version, e.g.
 `## 0.3.0 (2026-10-05)`.
@@ -16,7 +15,9 @@ When tagging a release, rename `Unreleased` to the version, e.g.
 - Virtual machines can't pair by default
 - Unpairing offline now finishes once you're back online
 - Windows fit their content instead of a fixed size
-- Click the version to see what's new
+- Click the version to see what the agent does and update it
+- Free Mac builds now update themselves instead of opening the download page
+- The installer shows each step: what it downloads, checks and installs
 
 ## 0.2.2 (2026-10-01)
 
