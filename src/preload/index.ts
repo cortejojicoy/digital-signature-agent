@@ -14,6 +14,7 @@ const bridge: AgentBridge = {
   getStatus: () => ipcRenderer.invoke(IPC.getStatus),
   startPairing: (input) => ipcRenderer.invoke(IPC.startPairing, { origin: String(input.origin), code: String(input.code) }),
   cancelPairing: () => ipcRenderer.invoke(IPC.cancelPairing),
+  confirmRepair: (repair) => ipcRenderer.invoke(IPC.confirmRepair, repair === true),
   getJob: (id) => ipcRenderer.invoke(IPC.getJob, String(id)),
   approveJob: (id) => ipcRenderer.invoke(IPC.approveJob, String(id)),
   rejectJob: (id) => ipcRenderer.invoke(IPC.rejectJob, String(id)),
