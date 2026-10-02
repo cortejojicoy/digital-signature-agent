@@ -222,6 +222,9 @@ Napi::Value DeviceInfo(const Napi::CallbackInfo& info) {
             o.Set("formFactor", result->formFactor);
             o.Set("hostname", result->hostname);
             o.Set("hardwareIdHash", result->hardwareIdHash);
+            if (result->chassisType > 0) o.Set("chassisType", result->chassisType);
+            else o.Set("chassisType", env.Null());
+            o.Set("virtual", result->isVirtual);
             return o;
         });
 }
