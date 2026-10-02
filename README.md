@@ -129,6 +129,12 @@ HTTP pairings from working until it's back on; they're marked **HTTP**.
   `npm run mock-server -- --lan`, which binds to every interface and prints
   the LAN address.
 
+A computer holds **one signature per app**: pairing a different account for an
+app that's already paired here is refused, so unpair it first. Pairing from a
+**virtual machine** (Parallels, UTM, VMware…) is refused by default. To test
+from one, set `SIGNATURE_AGENT_BLOCKED_DEVICE_TYPES=` (empty) on the server, or
+run `npm run mock-server -- --allow-vm`.
+
 The address must match the server's `APP_URL` exactly, or pairing fails with
 `origin_mismatch` (`localhost` and `127.0.0.1` count as different). Request
 proofs allow ±60 s of clock difference, so keep both machines' clocks synced.
