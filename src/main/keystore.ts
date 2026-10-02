@@ -34,8 +34,12 @@ export interface DeviceInfo {
   modelIdentifier: string;
   formFactor: 'laptop' | 'desktop' | 'unknown';
   hostname: string;
-  /** sha256(serverSalt || hardware uuid), never the raw uuid (§10.4). */
+  /** sha256(serverSalt || hardware uuid), never the raw uuid (§10.4). "" when the firmware has no usable uuid. */
   hardwareIdHash: string;
+  /** SMBIOS type 3 chassis type (Windows); null on macOS or when absent. */
+  chassisType: number | null;
+  /** The firmware says this is a virtual machine (macOS kern.hv_vmm_present, SMBIOS type 0 bit). */
+  virtual: boolean;
 }
 
 export interface KeyStore {
