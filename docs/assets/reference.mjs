@@ -912,7 +912,7 @@ catch (err) { if (isKeyStoreError(err, 'E_CANCELLED')) { /* user dismissed the p
         items: [
           { id: 'startupdater', kind: 'function', name: 'startUpdater', signature: 'startUpdater(onChange: (status: UpdateView) => void): void', summary: 'Packaged builds check at startup and every six hours. Signed and Windows builds download in the background; free macOS builds announce the release.', source: 'src/main/updater.ts#L41' },
           { id: 'checkforupdates', kind: 'function', name: 'checkForUpdates', signature: 'checkForUpdates(opts?: { background?: boolean }): Promise<void>', summary: 'Reads the latest GitHub release. Background checks (and a server 426) stay quiet on errors; manual checks report them.', source: 'src/main/updater.ts#L70' },
-          { id: 'installupdate', kind: 'function', name: 'installUpdate', signature: 'installUpdate(): Promise<void>', summary: 'Downloads via electron-updater, restarts to install, or opens the release page.', source: 'src/main/updater.ts#L99' },
+          { id: 'installupdate', kind: 'function', name: 'installUpdate', signature: 'installUpdate(): Promise<void>', summary: 'Downloads (electron-updater, or the free-macOS bundle swap in self-update.ts), restarts to install, or opens the release page in dev builds.', source: 'src/main/updater.ts#L99' },
           { id: 'fetchlatestrelease', kind: 'function', name: 'fetchLatestRelease', signature: 'fetchLatestRelease(fetch: FetchLike): Promise<ReleaseInfo>', summary: 'GitHub Releases API → `{ version, name, notes, url, publishedAt }`. Links outside this repository fall back to the releases page.', source: 'src/main/release.ts#L17' },
           { id: 'compareversions', kind: 'function', name: 'compareVersions', signature: 'compareVersions(a: string, b: string): number', summary: 'Numeric `x.y.z` comparison; pre-release suffixes are ignored.', source: 'src/main/release.ts#L58' },
           { id: 'settingsstore', kind: 'class', name: 'SettingsStore', signature: 'new SettingsStore(dir: string)', summary: '`settings.json` in userData: `{ developerMode }`. `load()`, `get()`, `update(patch)`.', source: 'src/main/settings.ts#L14' },
@@ -1092,7 +1092,7 @@ catch (err) { if (isKeyStoreError(err, 'E_CANCELLED')) { /* user dismissed the p
 | { state: 'ready'; release }
 | { state: 'error'; message }`, source: 'src/shared/ipc.ts#L123' },
           { id: 'ipc-checkforupdates', kind: 'ipc', name: 'checkForUpdates', channel: 'agent:check-for-updates', signature: 'window.agent.checkForUpdates(): Promise<void>', summary: 'Checks the latest GitHub release now. Progress arrives through `onUpdateChanged`.', source: 'src/shared/ipc.ts#L124' },
-          { id: 'ipc-installupdate', kind: 'ipc', name: 'installUpdate', channel: 'agent:install-update', signature: 'window.agent.installUpdate(): Promise<void>', summary: 'Downloads, restarts to install, or opens the release page, depending on the state.', source: 'src/shared/ipc.ts#L126' },
+          { id: 'ipc-installupdate', kind: 'ipc', name: 'installUpdate', channel: 'agent:install-update', signature: 'window.agent.installUpdate(): Promise<void>', summary: 'Downloads, restarts to install, or (dev builds only) opens the release page, depending on the state.', source: 'src/shared/ipc.ts#L126' },
         ],
       },
       {

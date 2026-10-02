@@ -154,12 +154,14 @@ ${steps([
 
 <h2 id="updates">Updates</h2>
 <p>The update icon sits next to the version number. It checks GitHub, then turns into <strong>Download</strong> or
-<strong>Restart to update</strong>. The agent also checks at startup and every six hours.</p>
+<strong>Restart to update</strong>. The agent also checks at startup and every six hours. Click the version itself
+for a short summary of what the agent does, and an <strong>Update</strong> button when there's a new version.</p>
 ${table(
   ['Build', 'Update'],
   [
     ['Signed, or Windows', 'Downloads, then installs on restart'],
-    ['Free macOS', 'Opens the release page; re-run the installer'],
+    ['Free macOS', 'Downloads the .zip, checks its SHA-512 and signature like the installer, then swaps the app on restart'],
+    ['<code>npm run dev</code>', 'Opens the release page'],
   ],
 )}
 
