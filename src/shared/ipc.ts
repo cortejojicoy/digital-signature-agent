@@ -17,7 +17,6 @@ export const IPC = {
   getUpdate: 'agent:get-update',
   checkForUpdates: 'agent:check-for-updates',
   installUpdate: 'agent:install-update',
-  getWhatsNew: 'agent:get-whats-new',
   openReleases: 'agent:open-releases',
   fitContent: 'agent:fit-content',
   // main → renderer events
@@ -59,25 +58,10 @@ export interface ReleaseView {
   version: string;
   name: string;
   notes: string;
-  highlights: string[];
   url: string;
   publishedAt: string;
 }
 
-/** One version in What's new, newest first. */
-export interface WhatsNewEntry {
-  version: string;
-  /** YYYY-MM-DD, or "". */
-  date: string;
-  highlights: string[];
-  /** `new`: an update you don't have yet. `current`: what's running. `unreleased`: dev builds only. */
-  tag: 'new' | 'current' | 'unreleased' | null;
-}
-
-export interface WhatsNewView {
-  current: string;
-  entries: WhatsNewEntry[];
-}
 
 export type UpdateView =
   | { state: 'idle' }
@@ -143,8 +127,6 @@ export interface AgentBridge {
   checkForUpdates(): Promise<void>;
   /** Downloads, restarts to install, or opens the release page, depending on the state. */
   installUpdate(): Promise<void>;
-  /** Release highlights: this version, older ones, and an available update. */
-  getWhatsNew(): Promise<WhatsNewView>;
   /** Opens the GitHub releases page in the browser. */
   openReleases(): Promise<void>;
   /** Tells the main process how tall the page's content is, so the window fits it. */
