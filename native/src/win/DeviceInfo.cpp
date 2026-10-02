@@ -46,9 +46,20 @@ std::string hostname() {
     return narrow(std::wstring(buf, size));
 }
 
-// SMBIOS system UUID (type 1, offset 8). From SMBIOS 2.6 on, the first three
-// fields are little-endian, matching how Windows itself formats it.
-std::string smbiosUuid() {
+struct SmbiosFacts {
+    std::string uuid;         // type 1 system UUID, "" if absent or a placeholder
+    int chassisType = 0;      // type 3 chassis type, 0 if absent
+    bool virtualMachine = false;  // type 0: "SMBIOS table describes a virtual machine"
+};
+
+// One walk over the raw SMBIOS table (GetSystemFirmwareTable 'RSMB').
+//
+// Type 0 (BIOS): characteristics extension byte 2 (offset 0x13, SMBIOS 2.4+),
+//   bit 4 = virtual machine.
+// Type 1 (System): UUID at offset 8. From SMBIOS 2.6 on, the first three
+//   fields are little-endian, matching how Windows itself formats it.
+// Type 3 (Enclosure): chassis type at offset 5, low 7 bits (bit 7 = lock).
+SmbiosFacts readSmbios() {
     struct RawSMBIOSData {
         BYTE Used20CallingMethod;
         BYTE SMBIOSMajorVersion;
@@ -58,50 +69,60 @@ std::string smbiosUuid() {
         BYTE SMBIOSTableData[1];
     };
 
+    SmbiosFacts facts;
     const DWORD signature = 'RSMB';
     UINT size = GetSystemFirmwareTable(signature, 0, nullptr, 0);
-    if (size == 0) return "";
+    if (size == 0) return facts;
     Bytes buffer(size);
-    if (GetSystemFirmwareTable(signature, 0, buffer.data(), size) != size) return "";
+    if (GetSystemFirmwareTable(signature, 0, buffer.data(), size) != size) return facts;
     auto* raw = reinterpret_cast<const RawSMBIOSData*>(buffer.data());
     const uint8_t* p = raw->SMBIOSTableData;
     const uint8_t* end = p + raw->Length;
     const bool littleEndian = raw->SMBIOSMajorVersion > 2 ||
                               (raw->SMBIOSMajorVersion == 2 && raw->SMBIOSMinorVersion >= 6);
+    bool haveUuid = false;
 
     while (p + 4 <= end) {
         const uint8_t type = p[0];
         const uint8_t length = p[1];
         if (length < 4 || p + length > end) break;
-        if (type == 1 && length >= 24) {
+
+        if (type == 0 && length >= 0x14) {
+            facts.virtualMachine = facts.virtualMachine || (p[0x13] & 0x10) != 0;
+        } else if (type == 1 && length >= 24 && !haveUuid) {
+            haveUuid = true;
             const uint8_t* u = p + 8;
             bool allZero = true, allFF = true;
             for (int i = 0; i < 16; i++) {
                 allZero &= u[i] == 0x00;
                 allFF &= u[i] == 0xff;
             }
-            if (allZero || allFF) return "";
-            char buf[37];
-            if (littleEndian) {
-                std::snprintf(buf, sizeof(buf),
-                              "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
-                              u[3], u[2], u[1], u[0], u[5], u[4], u[7], u[6], u[8], u[9], u[10], u[11],
-                              u[12], u[13], u[14], u[15]);
-            } else {
-                std::snprintf(buf, sizeof(buf),
-                              "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
-                              u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11],
-                              u[12], u[13], u[14], u[15]);
+            if (!allZero && !allFF) {
+                char buf[37];
+                if (littleEndian) {
+                    std::snprintf(buf, sizeof(buf),
+                                  "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+                                  u[3], u[2], u[1], u[0], u[5], u[4], u[7], u[6], u[8], u[9], u[10], u[11],
+                                  u[12], u[13], u[14], u[15]);
+                } else {
+                    std::snprintf(buf, sizeof(buf),
+                                  "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+                                  u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11],
+                                  u[12], u[13], u[14], u[15]);
+                }
+                facts.uuid = buf;
             }
-            return buf;
+        } else if (type == 3 && length >= 6 && facts.chassisType == 0) {
+            facts.chassisType = p[5] & 0x7f;
         }
+
         if (type == 127) break;  // end-of-table
         // Skip the formatted area, then the string set (ends with a double NUL).
         const uint8_t* s = p + length;
         while (s + 1 < end && !(s[0] == 0 && s[1] == 0)) s++;
         p = s + 2;
     }
-    return "";
+    return facts;
 }
 
 }  // namespace
@@ -118,7 +139,10 @@ DeviceInfo readDeviceInfo(const std::string& salt) {
     info.model = !family.empty() && family != "To be filled by O.E.M." ? family : info.modelIdentifier;
     info.formFactor = formFactor();
     info.hostname = hostname();
-    info.hardwareIdHash = saltedHardwareHash(salt, smbiosUuid());
+    const SmbiosFacts smbios = readSmbios();
+    info.hardwareIdHash = saltedHardwareHash(salt, smbios.uuid);
+    info.chassisType = smbios.chassisType;
+    info.isVirtual = smbios.virtualMachine;
     return info;
 }
 
