@@ -92,7 +92,12 @@ export const sections = [
     "virtual": false
   },
   "agent_version": "1.0.0",
-  "proof": "<base64 sig of v1|register_agent|nonce|user_id|sha256(identity‖session)>"
+  "proof": "<base64 sig of v1|register_agent|nonce|user_id|sha256(identity‖session)>",
+  // re-pairing the same account only; else null
+  "replaces": {
+    "device_uuid": "<this install's existing device>",
+    "proof": "<base64 session-key sig of v1|rebind_agent|nonce|user_id|sha256(identity‖session)>"
+  }
 }`,
             response: `{
   "status": "awaiting_confirmation",
@@ -105,10 +110,12 @@ export const sections = [
               { status: 422, code: 'device_type_not_allowed', when: 'The detected `device_type` is in `blocked_device_types`, or `virtual` is true and virtual machines are blocked.' },
               { status: 409, code: 'machine_already_paired', when: 'Another account’s active agent device has the same `hardware_id_hash`. The message never names the owner.' },
               { status: 409, code: 'account_already_paired', when: 'This account’s active agent device is on another computer, or either `hardware_id_hash` is missing. The body adds `device: { label, device_type }`, the account’s own computer.' },
-              { status: '4xx', code: '…', when: 'The pairing is not pending, it expired, the code doesn’t match, the algorithm isn’t ES256/RS256, or the proof fails.' },
+              { status: 422, code: 'invalid_proof', when: 'The `register_agent` proof fails, or `replaces.proof` doesn’t verify with that device’s session key.' },
+              { status: '4xx', code: '…', when: 'The pairing is not pending, it expired, the code doesn’t match, or the algorithm isn’t ES256/RS256.' },
             ],
             notes: [
-              'Checks run in this order: pending and unexpired → code → algorithm → proof → presence → device type → one active device per computer.',
+              'Checks run in this order: pending and unexpired → code → algorithm → proof → presence → device type → one active device per computer → rebind proof → one computer per account.',
+              'Re-pairing the same account, the agent adds `replaces`: its existing device, and a `rebind_agent` proof by that pairing’s session key (no prompt). The session key never leaves the Secure Enclave / TPM, so the server rebinds that device even when `hardware_id_hash` is missing or changed. A device that isn’t this account’s active agent is ignored.',
               '`hardware_id_hash` is `sha256(server.salt ‖ hardware uuid)`, or `null` when the firmware has no usable uuid (never the hash of an empty string). Without it the server can’t enforce one device per computer.',
               '`device_type` is one of the 22 catalogue values (see `DEVICE_TYPES`); unknown values become `other`. `chassis_type` is the SMBIOS type 3 value on Windows.',
               'When `attestation` is present it looks like `{ "format": "windows-hello-tpm", "statement": "<base64>", "chain": ["<base64>"] }`. A failed attestation check is not fatal.',
@@ -319,6 +326,7 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
     format: 'v1|<purpose>|<nonce_b64url>|<user_id>|<payload_hash_hex>',
     purposes: [
       { purpose: 'register_agent', key: 'identity key', hash: 'sha256(identity_spki_der ‖ session_spki_der)' },
+      { purpose: 'rebind_agent', key: 'the existing pairing’s session key', hash: 'sha256(identity_spki_der ‖ session_spki_der) of the new keys' },
       { purpose: 'sign_receipt', key: 'identity key', hash: 'the job’s payload_hash (the document hash)' },
       { purpose: 'request', key: 'session key', hash: 'sha256("<METHOD>|<path+query>|<raw body>|<timestamp>")' },
     ],

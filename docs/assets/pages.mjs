@@ -448,6 +448,7 @@ ${table(
   ['Purpose', 'Key', '<code>payload_hash</code>'],
   [
     ['<code>register_agent</code>', 'Identity', '<code>sha256(identity_spki ‖ session_spki)</code>'],
+    ['<code>rebind_agent</code>', 'Existing session', '<code>sha256(identity_spki ‖ session_spki)</code> of the new keys'],
     ['<code>sign_receipt</code>', 'Identity', 'The document hash'],
     ['<code>request</code>', 'Session', '<code>sha256("METHOD|path|body|timestamp")</code>'],
   ],
@@ -565,6 +566,8 @@ public function handle(Request $request, Closure $next)
   <li><code>lookup</code>: unknown, used or expired code → <code>404 invalid_code</code>. Throttle hard.</li>
   <li><code>server.origin</code> must equal the URL the agent called. <code>server.id</code> must never change.</li>
   <li><code>claim</code>: verify the <code>register_agent</code> proof; if presence is required and missing → <code>422 presence_required</code>.</li>
+  <li><code>claim</code>: if <code>replaces</code> names this account’s active agent device, verify its <code>rebind_agent</code> proof with that device’s session key (<code>422 invalid_proof</code> if it fails). That device is then this computer, whatever the hash says.</li>
+  <li><code>claim</code>: treat a <code>hardware_id_hash</code> that equals the hash of a firmware placeholder UUID (shared by many boards) as missing.</li>
   <li><code>claim</code>: a blocked <code>device_type</code>, or <code>virtual: true</code> while VMs are blocked → <code>422 device_type_not_allowed</code>.</li>
   <li><code>claim</code>: another account’s active agent device with the same <code>hardware_id_hash</code> → <code>409 machine_already_paired</code>, without naming them. The same account’s → return it as <code>existing_device</code>.</li>
   <li><code>claim</code>: the account’s active agent device on another computer (or with a missing hash on either side) → <code>409 account_already_paired</code> with <code>device: { label, device_type }</code>. Return the account’s computer from <code>lookup</code> as <code>agent_device</code> so the agent can stop early.</li>
