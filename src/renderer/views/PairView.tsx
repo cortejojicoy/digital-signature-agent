@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 
 import type { PairingProgressView, PairingResult, ServerView } from '../../shared/ipc';
 import { IconButton } from '../icons';
+import { OfflinePrompt, useUnpair } from '../unpair';
 
 interface Props {
   initialOrigin?: string;
@@ -37,7 +38,7 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
   const [running, setRunning] = useState(false);
   const [paired, setPaired] = useState<{ serverName: string; rebound: boolean } | null>(null);
   const [servers, setServers] = useState<ServerView[]>([]);
-  const [unpairing, setUnpairing] = useState(false);
+  const unpairing = useUnpair();
 
   useEffect(() => window.agent.onPairingProgress(setProgress), []);
   useEffect(() => {
@@ -50,13 +51,10 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
   const holder = servers.find((s) => sameOrigin(s.origin, origin));
 
   const unpair = async (serverId: string) => {
-    setUnpairing(true);
-    try {
-      await window.agent.unpair(serverId);
-      setFailure(null);
-    } finally {
-      setUnpairing(false);
-    }
+    if (await unpairing.unpair(serverId)) setFailure(null);
+  };
+  const removeAnyway = async () => {
+    if (await unpairing.removeAnyway()) setFailure(null);
   };
 
   const applyPaste = (value: string, set: (v: string) => void) => {
@@ -134,13 +132,22 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
             </p>
             <IconButton
               icon="unlink"
-              label={unpairing ? 'Unpairing…' : `Unpair ${holder.name}`}
+              label={unpairing.busy ? 'Unpairing…' : `Unpair ${holder.name}`}
               tip="above"
-              disabled={unpairing}
+              disabled={!!unpairing.busy || !!unpairing.offline}
               onClick={() => void unpair(holder.id)}
             />
           </div>
         )}
+        {unpairing.offline && (
+          <OfflinePrompt
+            serverName={unpairing.offline.serverName}
+            busy={!!unpairing.busy}
+            onRemove={() => void removeAnyway()}
+            onKeep={unpairing.keep}
+          />
+        )}
+        {unpairing.note && <p className="muted small">{unpairing.note}</p>}
         <label className="field">
           <span>Pairing code</span>
           <input
@@ -182,10 +189,18 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
             {failure.code === 'app_already_paired' && failure.serverId && (
               <IconButton
                 icon="unlink"
-                label={unpairing ? 'Unpairing…' : `Unpair ${failure.serverName ?? 'that app'}`}
+                label={unpairing.busy ? 'Unpairing…' : `Unpair ${failure.serverName ?? 'that app'}`}
                 tip="above"
-                disabled={unpairing}
+                disabled={!!unpairing.busy || !!unpairing.offline}
                 onClick={() => void unpair(failure.serverId!)}
+              />
+            )}
+            {failure.code === 'account_already_paired' && failure.manageUrl && (
+              <IconButton
+                icon="external"
+                label="Open signing devices"
+                tip="above"
+                onClick={() => void window.agent.openDevicesPage()}
               />
             )}
           </div>

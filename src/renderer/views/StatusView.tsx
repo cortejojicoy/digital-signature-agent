@@ -3,15 +3,17 @@ import { useCallback, useEffect, useState } from 'react';
 import type { StatusView as Status, UpdateView } from '../../shared/ipc';
 import { IconButton, type IconName } from '../icons';
 import { deviceTypeLabel, presenceLabel, protectionLabel } from '../labels';
+import { OfflinePrompt, useUnpair } from '../unpair';
 import { AboutDialog } from './AboutDialog';
 
 export function StatusView({ onPair }: { onPair: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     void window.agent.getStatus().then(setStatus);
   }, []);
+  const unpairing = useUnpair(refresh);
 
   useEffect(() => {
     refresh();
@@ -20,12 +22,12 @@ export function StatusView({ onPair }: { onPair: () => void }) {
 
   if (!status) return <main className="page" aria-busy="true" />;
 
-  const unpair = async (id: string) => {
-    setBusy(id);
+  const retry = async (origin: string) => {
+    setRetrying(origin);
     try {
-      await window.agent.unpair(id);
+      await window.agent.retryRevokes(origin);
     } finally {
-      setBusy(null);
+      setRetrying(null);
       refresh();
     }
   };
@@ -63,7 +65,15 @@ export function StatusView({ onPair }: { onPair: () => void }) {
           <h2>Paired apps</h2>
           <IconButton icon="plus" label="Pair with an app" variant="primary" onClick={onPair} />
         </div>
-        <p className="muted small">One signature per app on this computer. To use another account for an app, unpair it first.</p>
+        <p className="muted small">
+          One signature per app on this computer, and one computer per account. To use another account for an app, unpair
+          it first.
+        </p>
+        {unpairing.note && (
+          <p className="muted small" role="status">
+            {unpairing.note}
+          </p>
+        )}
         {status.servers.length === 0 ? (
           <p className="muted">
             None yet. In the web app, open <strong>My signing devices → Pair desktop agent</strong>.
@@ -98,12 +108,43 @@ export function StatusView({ onPair }: { onPair: () => void }) {
                       </ul>
                     </details>
                   )}
+                  {unpairing.offline?.serverId === s.id && (
+                    <OfflinePrompt
+                      serverName={unpairing.offline.serverName}
+                      busy={unpairing.busy === s.id}
+                      onRemove={() => void unpairing.removeAnyway()}
+                      onKeep={unpairing.keep}
+                    />
+                  )}
                 </div>
                 <IconButton
                   icon="unlink"
-                  label={busy === s.id ? 'Unpairing…' : 'Unpair'}
-                  disabled={busy === s.id}
-                  onClick={() => void unpair(s.id)}
+                  label={unpairing.busy === s.id ? 'Unpairing…' : 'Unpair'}
+                  disabled={unpairing.busy === s.id || unpairing.offline?.serverId === s.id}
+                  onClick={() => void unpairing.unpair(s.id)}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+        {status.pendingRevokes.length > 0 && (
+          <ul className="server-list">
+            {status.pendingRevokes.map((r) => (
+              <li key={`${r.origin}|${r.queuedAt}`} className="server">
+                <div>
+                  <div className="server-name">Waiting to tell {r.serverName}</div>
+                  <div className="mono muted">{r.origin}</div>
+                  <div className="muted small">
+                    Removed from this computer on {formatWhen(r.queuedAt)}. Until {r.serverName} hears, it still lists this
+                    computer, so your account can't pair another one. Retried every hour.
+                  </div>
+                </div>
+                <IconButton
+                  icon="refresh"
+                  label={retrying === r.origin ? 'Retrying…' : 'Retry now'}
+                  className={retrying === r.origin ? 'is-spinning' : ''}
+                  disabled={retrying === r.origin}
+                  onClick={() => void retry(r.origin)}
                 />
               </li>
             ))}
@@ -246,4 +287,11 @@ function VersionRow({
 function formatTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+function formatWhen(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? ''
+    : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
