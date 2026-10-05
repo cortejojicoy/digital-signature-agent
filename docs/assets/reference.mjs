@@ -40,6 +40,13 @@ export const sections = [
   },
   "require_presence": true,
   "blocked_device_types": ["virtual_machine"],
+  "agent_device": {
+    "uuid": "<uuid>",
+    "label": "Juan’s MacBook Pro",
+    "device_type": "macbook_pro",
+    "hardware_id_hash": "<sha256 hex> | null"
+  },
+  "devices_url": "https://…",
   "expires_at": "<ISO 8601>"
 }`,
             errors: [{ status: 404, code: 'invalid_code', when: 'The code is unknown, used or expired.' }],
@@ -49,6 +56,8 @@ export const sections = [
               '`server.salt` is used for `hardware_id_hash` and must stay stable per installation.',
               '`blocked_device_types` lets the agent stop before creating keys when its detected type is refused (`device_type_not_allowed`). Older servers omit it; the claim is still checked.',
               'Before creating keys, the agent also stops with `app_already_paired` if this computer already holds a different account’s signature for this server: one signature per app per computer.',
+              '`agent_device` is the account’s paired computer for this app, or `null`. One computer per account: if its `hardware_id_hash` isn’t this computer’s (or either is missing), the agent stops with `account_already_paired` before creating keys. Older servers omit it; the claim is still checked.',
+              '`devices_url` is where the account’s signing devices are managed. The agent opens it only if it’s on the server’s origin, and uses the origin otherwise.',
             ],
             client: 'agentapi-lookuppairing',
             source: 'src/main/api.ts#L166',
@@ -95,6 +104,7 @@ export const sections = [
               { status: 422, code: 'presence_required', when: '`require_presence` is set but `user_presence` is false.' },
               { status: 422, code: 'device_type_not_allowed', when: 'The detected `device_type` is in `blocked_device_types`, or `virtual` is true and virtual machines are blocked.' },
               { status: 409, code: 'machine_already_paired', when: 'Another account’s active agent device has the same `hardware_id_hash`. The message never names the owner.' },
+              { status: 409, code: 'account_already_paired', when: 'This account’s active agent device is on another computer, or either `hardware_id_hash` is missing. The body adds `device: { label, device_type }`, the account’s own computer.' },
               { status: '4xx', code: '…', when: 'The pairing is not pending, it expired, the code doesn’t match, the algorithm isn’t ES256/RS256, or the proof fails.' },
             ],
             notes: [
@@ -437,9 +447,9 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             id: 'agent-unpair',
             kind: 'method',
             name: 'Agent.unpair',
-            signature: 'agent.unpair(serverId: string): Promise<void>',
+            signature: "agent.unpair(serverId: string, opts?: { offline?: 'ask' | 'remove' }): Promise<UnpairResult>",
             summary:
-              'Revokes the device on the server, then deletes the local keys and pairing. If the server can’t be reached, the pairing and its signing key go at once, the revoke is queued in `pending-revokes.json` with only the session key kept to authenticate it, and `retryRevokes` finishes it later. A 401 counts as already revoked.',
+              'Revokes the device on the server first, then deletes the local keys and pairing: `{ status: \'unpaired\' }`. A 401 counts as already revoked. If the server can’t be reached, by default nothing changes and it resolves `{ status: \'unreachable\', serverName }`, so the UI can ask. With `offline: \'remove\'` it tries the server again, and if that still fails the pairing and its signing key go at once, the revoke is queued in `pending-revokes.json` with only the session key kept to authenticate it, and `retryRevokes` finishes it later: `{ status: \'removed_locally\' }`. Never refuses outright, so the signing key can always be removed.',
             source: 'src/main/agent.ts#L218',
           },
           {
@@ -463,8 +473,16 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             kind: 'method',
             name: 'Agent.retryRevokes',
             signature: 'agent.retryRevokes(origin?: string): Promise<void>',
-            summary: 'Retries queued revokes (all, or one origin’s). Done on success or 401, when the session key is deleted too; anything else stays queued. Run at start-up, hourly, and by `pair()` before pairing with the same origin.',
+            summary: 'Retries queued revokes (all, or one origin’s). Done on success or 401, when the session key is deleted too; anything else stays queued. Run at start-up, hourly, by `pair()` before pairing with the same origin, and by **Retry now** in the status window.',
             source: 'src/main/agent.ts#L254',
+          },
+          {
+            id: 'agent-pendingrevokes',
+            kind: 'method',
+            name: 'Agent.pendingRevokes',
+            signature: 'agent.pendingRevokes(): PendingRevokeSummary[]',
+            summary: 'Unpairs the server hasn’t heard about yet, as `{ origin, serverName, queuedAt }`, for the status window’s “Waiting to tell …” list. Never includes tokens.',
+            source: 'src/main/agent.ts',
           },
           {
             id: 'agent-refreshotherdevices',
@@ -595,10 +613,11 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
               { name: 'opts.signal?', type: 'AbortSignal', desc: 'Cancels the flow.' },
               { name: 'opts.confirmRepair?', type: '(existing: PairedServer) => Promise<boolean>', desc: 'This account is already paired for the app: true re-pairs with new keys, false stops before anything is created. Without it, re-pairing goes ahead.' },
             ],
-            throws: '`PairingError` (`origin_mismatch`, `invalid_response`, `presence_unavailable`, `rejected`, `expired`, `aborted`, `app_already_paired`, `machine_already_paired`, `device_type_not_allowed`), `ApiError`, or key store errors.',
+            throws: '`PairingError` (`origin_mismatch`, `invalid_response`, `presence_unavailable`, `rejected`, `expired`, `aborted`, `app_already_paired`, `machine_already_paired`, `account_already_paired`, `device_type_not_allowed`), `ApiError`, or key store errors.',
             notes: [
               'One signature per app per computer. Right after the lookup, before any key or OS prompt: a detected type in `blocked_device_types` stops with `device_type_not_allowed`; a different account already paired for this server stops with `app_already_paired`; the same account triggers `already_paired_locally` and `confirmRepair`.',
-              'The server enforces both again at claim (`machine_already_paired`, `device_type_not_allowed`), mapped to the same messages.',
+              'One computer per account: if the lookup’s `agent_device` isn’t provably this computer, pairing stops with `account_already_paired` before any key or OS prompt.',
+              'The server enforces all of these again at claim (`machine_already_paired`, `account_already_paired`, `device_type_not_allowed`), mapped to the same messages.',
               'A same-account re-pair updates the server’s existing device (`rebound: true` in `paired`), keeping its uuid and history.',
               'Each pairing gets fresh keys under a new key id (`ds.<hash16>.<rand8>.identity|session`), so a failed re-pair never breaks the existing pairing.',
               'Old keys for the same server are deleted only after the new pairing is saved. Keys created by a failed attempt are always deleted.',
@@ -610,8 +629,8 @@ X-Agent-Proof: <base64 ES256 DER signature by the session key of
             id: 'pairingerror',
             kind: 'class',
             name: 'PairingError',
-            signature: "class PairingError extends Error { code: PairingErrorCode; serverId?: string }",
-            summary: 'Pairing failures with user-facing messages. Codes: `origin_mismatch`, `invalid_response`, `presence_unavailable`, `rejected`, `expired`, `aborted`, `app_already_paired` (with `serverId`, the pairing to unpair first), `machine_already_paired`, `device_type_not_allowed`.',
+            signature: "class PairingError extends Error { code: PairingErrorCode; serverId?: string; manageUrl?: string }",
+            summary: 'Pairing failures with user-facing messages. Codes: `origin_mismatch`, `invalid_response`, `presence_unavailable`, `rejected`, `expired`, `aborted`, `app_already_paired` (with `serverId`, the pairing to unpair first), `machine_already_paired`, `account_already_paired` (with `manageUrl`, where the other computer can be removed), `device_type_not_allowed`.',
             source: 'src/main/pairing.ts#L48',
           },
           {
@@ -1075,15 +1094,18 @@ catch (err) { if (isKeyStoreError(err, 'E_CANCELLED')) { /* user dismissed the p
           { id: 'ipc-getstatus', kind: 'ipc', name: 'getStatus', channel: 'agent:get-status', signature: 'window.agent.getStatus(): Promise<StatusView>', summary: 'Version, platform, capabilities and paired servers.', returns: `{ version: string; platform: 'macos' | 'windows' | 'other';
   capabilities: { hardware; userPresence; attestation };
   servers: ServerView[];               // each has insecure, deviceType and otherDevices
+  pendingRevokes: { origin; serverName; queuedAt }[];
   developerMode: { on; locked } }`, source: 'src/shared/ipc.ts#L113' },
-          { id: 'ipc-startpairing', kind: 'ipc', name: 'startPairing', channel: 'agent:start-pairing', signature: 'window.agent.startPairing({ origin, code }): Promise<PairingResult>', summary: 'Runs `Agent.pair`. Starting a new pairing aborts one in progress. Never throws: errors come back as `{ ok: false, error, code? }`; with `code: app_already_paired`, `serverId` and `serverName` name the pairing to unpair first.', returns: '`{ ok: true; serverName; rebound } | { ok: false; error; code?; serverId?; serverName? }`', source: 'src/shared/ipc.ts#L114' },
+          { id: 'ipc-startpairing', kind: 'ipc', name: 'startPairing', channel: 'agent:start-pairing', signature: 'window.agent.startPairing({ origin, code }): Promise<PairingResult>', summary: 'Runs `Agent.pair`. Starting a new pairing aborts one in progress. Never throws: errors come back as `{ ok: false, error, code? }`; with `code: app_already_paired`, `serverId` and `serverName` name the pairing to unpair first; with `code: account_already_paired`, `manageUrl` is the devices page `openDevicesPage()` opens.', returns: '`{ ok: true; serverName; rebound } | { ok: false; error; code?; serverId?; serverName?; manageUrl? }`', source: 'src/shared/ipc.ts#L114' },
           { id: 'ipc-confirmrepair', kind: 'ipc', name: 'confirmRepair', channel: 'agent:confirm-repair', signature: 'window.agent.confirmRepair(repair: boolean): Promise<void>', summary: 'Answers an `already_paired_locally` progress: true re-pairs this account with new keys, false stops before anything is created.', source: 'src/shared/ipc.ts#L117' },
           { id: 'ipc-cancelpairing', kind: 'ipc', name: 'cancelPairing', channel: 'agent:cancel-pairing', signature: 'window.agent.cancelPairing(): Promise<void>', summary: 'Aborts the pairing in progress.', source: 'src/shared/ipc.ts#L115' },
           { id: 'ipc-getjob', kind: 'ipc', name: 'getJob', channel: 'agent:get-job', signature: 'window.agent.getJob(id: string): Promise<JobView | null>', summary: 'The job waiting in the confirm window, or `null`.', returns: `{ id; serverName; origin; documentTitle; signerName; purpose;
   expiresAt; protection; userPresence }`, source: 'src/shared/ipc.ts#L118' },
           { id: 'ipc-approvejob', kind: 'ipc', name: 'approveJob', channel: 'agent:approve-job', signature: 'window.agent.approveJob(id: string): Promise<void>', summary: 'Approve in the confirm window. The OS prompt follows; it is the real security boundary.', source: 'src/shared/ipc.ts#L119' },
           { id: 'ipc-rejectjob', kind: 'ipc', name: 'rejectJob', channel: 'agent:reject-job', signature: 'window.agent.rejectJob(id: string): Promise<void>', summary: 'Decline in the confirm window. The server is told `declined`.', source: 'src/shared/ipc.ts#L120' },
-          { id: 'ipc-unpair', kind: 'ipc', name: 'unpair', channel: 'agent:unpair', signature: 'window.agent.unpair(serverId: string): Promise<void>', summary: 'Runs `Agent.unpair`.', source: 'src/shared/ipc.ts#L121' },
+          { id: 'ipc-unpair', kind: 'ipc', name: 'unpair', channel: 'agent:unpair', signature: "window.agent.unpair(serverId: string, opts?: { offline?: 'ask' | 'remove' }): Promise<UnpairResult>", summary: 'Runs `Agent.unpair`. On `unreachable` the window shows “Can’t reach …” with **Remove anyway** (calls again with `offline: \'remove\'`) and **Keep the pairing**.', source: 'src/shared/ipc.ts' },
+          { id: 'ipc-retryrevokes', kind: 'ipc', name: 'retryRevokes', channel: 'agent:retry-revokes', signature: 'window.agent.retryRevokes(origin: string): Promise<void>', summary: 'Runs `Agent.retryRevokes(origin)`: **Retry now** in the status window.', source: 'src/shared/ipc.ts' },
+          { id: 'ipc-opendevicespage', kind: 'ipc', name: 'openDevicesPage', channel: 'agent:open-devices-page', signature: 'window.agent.openDevicesPage(): Promise<void>', summary: 'Opens the `manageUrl` of the last `account_already_paired` failure in the browser. Takes no URL: the renderer can’t open one of its own.', source: 'src/shared/ipc.ts' },
           { id: 'ipc-setdevelopermode', kind: 'ipc', name: 'setDeveloperMode', channel: 'agent:set-developer-mode', signature: 'window.agent.setDeveloperMode(on: boolean): Promise<void>', summary: 'Turning it on asks for confirmation in a native dialog first. No effect under `npm run dev`, where it is always on.', source: 'src/shared/ipc.ts#L122' },
           { id: 'ipc-getupdate', kind: 'ipc', name: 'getUpdate', channel: 'agent:get-update', signature: 'window.agent.getUpdate(): Promise<UpdateView>', summary: 'The current update state.', returns: `| { state: 'idle' | 'checking' }
 | { state: 'up_to_date'; checkedAt }

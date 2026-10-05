@@ -468,6 +468,11 @@ before it creates any key (<code>app_already_paired</code>), and by the server a
 (<code>409 machine_already_paired</code>, matched on <code>hardware_id_hash</code>). The same account pairing again
 updates its existing device in place: same uuid and history, new keys (<code>rebound: true</code>). Virtual machines are
 refused by default (<code>422 device_type_not_allowed</code>).</p>
+<p><strong>One computer per account, per app.</strong> An account can be paired with only one computer for each app.
+The lookup returns the account’s computer as <code>agent_device</code>; if it isn’t this computer, the agent stops before
+it creates any key (<code>account_already_paired</code>), and the server refuses at claim
+(<code>409 account_already_paired</code>, naming only the account’s own computer). To move to another computer, remove
+the old one on the web first.</p>
 ${httpCall({
   method: 'POST',
   path: '/signature/agent/pairings/lookup',
@@ -479,6 +484,8 @@ ${httpCall({
   "server": { "id": "dict", "name": "DICT Signing", "origin": "https://sign.dict.gov.ph", "salt": "…" },
   "require_presence": true,
   "blocked_device_types": ["virtual_machine"],
+  "agent_device": null,
+  "devices_url": "https://sign.dict.gov.ph",
   "expires_at": "2026-10-01T09:10:00Z"
 }`,
 })}
@@ -560,9 +567,10 @@ public function handle(Request $request, Closure $next)
   <li><code>claim</code>: verify the <code>register_agent</code> proof; if presence is required and missing → <code>422 presence_required</code>.</li>
   <li><code>claim</code>: a blocked <code>device_type</code>, or <code>virtual: true</code> while VMs are blocked → <code>422 device_type_not_allowed</code>.</li>
   <li><code>claim</code>: another account’s active agent device with the same <code>hardware_id_hash</code> → <code>409 machine_already_paired</code>, without naming them. The same account’s → return it as <code>existing_device</code>.</li>
-  <li><code>confirm</code>: check the computer again under a lock, and back it with a unique index on the hash of active agent devices. Same account → update that device (new keys, old token revoked).</li>
+  <li><code>claim</code>: the account’s active agent device on another computer (or with a missing hash on either side) → <code>409 account_already_paired</code> with <code>device: { label, device_type }</code>. Return the account’s computer from <code>lookup</code> as <code>agent_device</code> so the agent can stop early.</li>
+  <li><code>confirm</code>: check the computer and the account again under a lock, and back them with unique indexes on the hash and on the user id of active agent devices. Same account → update that device (new keys, old token revoked).</li>
   <li><code>poll</code>: issue the token once, store only its hash. Later polls → <code>409 token_already_issued</code>. Include <code>rebound</code>.</li>
-  <li><code>DELETE /device</code> may arrive late: the agent retries revokes that failed offline. A 401 tells it the device is already gone.</li>
+  <li><code>DELETE /device</code> may arrive late: if the server can’t be reached, the agent asks the user, and if they remove it anyway it retries the revoke later. Until then the computer still counts for the account. A 401 tells it the device is already gone.</li>
 </ul>
 
 <h2 id="job-checks">Job checks</h2>
