@@ -44,6 +44,8 @@ export interface PendingRevoke {
   deviceUuid: string;
   sessionKeyId: string;
   queuedAt: string;
+  /** For the status window. Revokes queued by older versions lack it. */
+  serverName?: string;
 }
 
 export interface TokenCipher {
