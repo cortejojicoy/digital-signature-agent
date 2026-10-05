@@ -8,6 +8,7 @@ When tagging a release, rename `Unreleased` to the version, e.g.
 
 ## Unreleased
 
+- Answers an app's "is this your paired computer?" check silently, so apps that require it can let you sign from this computer
 - Pair one computer with several apps, one signature per app
 - Re-pairing the same account now updates your device instead of adding a new one
 - See your other paired devices for each app
