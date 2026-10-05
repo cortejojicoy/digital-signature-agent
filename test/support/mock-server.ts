@@ -6,7 +6,8 @@
 // a reference for the package's Laravel implementation: every check the
 // package must make is here (proof verification, single-use link tokens,
 // request-proof replay and staleness, min_version, device binding, one
-// device per computer and app, blocked device types).
+// device per computer and app, one computer per account, blocked device
+// types).
 //
 // Self-contained (node: imports only) so Node can run it directly with type
 // stripping.
@@ -140,6 +141,8 @@ export class MockSigningServer {
   blockedDeviceTypes: string[];
   /** The next DELETE /device answers 503, as if the server were unreachable. */
   failNextUnpair = false;
+  /** Every DELETE /device answers 503 (npm run mock-server -- --fail-revoke). */
+  failUnpairs = false;
   readonly users: MockUser[];
   readonly pairings = new Map<string, Pairing>();
   readonly devices = new Map<string, Device>();
@@ -205,6 +208,7 @@ export class MockSigningServer {
     // Re-check under "the lock": another pairing may have taken this computer meanwhile.
     const holder = this.activeDeviceFor(c.device?.hardware_id_hash ?? null);
     if (holder && holder.userId !== p.userId) throw new Error('machine_already_paired');
+    if (this.blockingComputer(p.userId, c.device?.hardware_id_hash ?? null)) throw new Error('account_already_paired');
 
     const keys = {
       algorithm: c.algorithm,
@@ -250,6 +254,16 @@ export class MockSigningServer {
     const device = this.devices.get(uuid);
     if (device) device.revoked = true;
     for (const [hash, owner] of this.tokens) if (owner === uuid) this.tokens.delete(hash);
+  }
+
+  /** This user's active agent devices for this app, newest first. */
+  private activeDevicesOf(userId: string): Device[] {
+    return [...this.devices.values()].filter((d) => !d.revoked && d.userId === userId).reverse();
+  }
+
+  /** The user's computer that keeps them from pairing this one: any that isn't provably this computer. */
+  private blockingComputer(userId: string, hardwareIdHash: string | null): Device | undefined {
+    return this.activeDevicesOf(userId).find((d) => !hardwareIdHash || d.hardwareIdHash !== hardwareIdHash);
   }
 
   /** The active agent device on this computer for this app, whoever owns it. */
@@ -323,7 +337,7 @@ export class MockSigningServer {
         return send(res, 200, { device: { uuid: device.uuid, label: device.label, status: 'active' }, user, other_devices: others });
       }
       if (method === 'DELETE' && path === '/signature/agent/device') {
-        if (this.failNextUnpair) {
+        if (this.failNextUnpair || this.failUnpairs) {
           this.failNextUnpair = false;
           throw new HttpError(503, 'unavailable', 'Service unavailable.');
         }
@@ -351,6 +365,7 @@ export class MockSigningServer {
     const p = [...this.pairings.values()].find((x) => x.userCodeHash === hash && x.status === 'pending');
     if (!p || p.expiresAt < this.now()) throw new HttpError(404, 'invalid_code', 'That code is invalid or has expired.');
     const user = this.users.find((u) => u.id === p.userId)!;
+    const computer = this.activeDevicesOf(p.userId)[0];
     return {
       pairing: p.uuid,
       nonce: p.nonce,
@@ -359,6 +374,10 @@ export class MockSigningServer {
       server: { id: this.serverId, name: this.serverName, origin: this.origin, salt: this.salt },
       require_presence: this.requirePresence,
       blocked_device_types: this.blockedDeviceTypes,
+      agent_device: computer
+        ? { uuid: computer.uuid, label: computer.label, device_type: computer.deviceType, hardware_id_hash: computer.hardwareIdHash }
+        : null,
+      devices_url: `${this.origin}/devices`,
       expires_at: new Date(p.expiresAt).toISOString(),
     };
   }
@@ -385,6 +404,13 @@ export class MockSigningServer {
     const holder = this.activeDeviceFor(c.device?.hardware_id_hash ?? null);
     if (holder && holder.userId !== p.userId) {
       throw new HttpError(409, 'machine_already_paired', 'This computer is already paired with another account.');
+    }
+    // One computer per account and app. Names only the account's own computer.
+    const blocker = this.blockingComputer(p.userId, c.device?.hardware_id_hash ?? null);
+    if (blocker) {
+      throw new HttpError(409, 'account_already_paired', `Your account is already paired with ${blocker.label}.`, {
+        device: { label: blocker.label, device_type: blocker.deviceType },
+      });
     }
     p.status = 'awaiting_confirmation';
     p.claim = c;
@@ -518,7 +544,7 @@ function lanAddress(): string | null {
   return null;
 }
 
-// Standalone: node test/support/mock-server.ts [port] [--lan] [--allow-vm]
+// Standalone: node test/support/mock-server.ts [port] [--lan] [--allow-vm] [--fail-revoke]
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const port = Number(args.find((a) => /^\d+$/.test(a)) ?? 8787);
@@ -528,6 +554,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // Virtual machines are refused by default, like the package.
     blockedDeviceTypes: args.includes('--allow-vm') ? [] : undefined,
   });
+  // Every unpair fails as if offline, to try the "Can't reach" prompt.
+  server.failUnpairs = args.includes('--fail-revoke');
   const origin = await server.listen();
   const { uuid, userCode, link } = server.startPairing();
   console.log(`Mock signing server on ${origin}`);

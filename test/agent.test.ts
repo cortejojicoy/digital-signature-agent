@@ -452,6 +452,89 @@ describe('one signature per app', () => {
   });
 });
 
+// ── One computer per account, per app (one-computer-per-account-plan.md) ──
+
+const OFFICE = { device: { hardwareUuid: 'OFFICE-MINI', hostname: 'Office Mac mini', model: 'Mac mini (2024)' } };
+
+describe('one computer per account', () => {
+  it('refuses a second computer before creating any key', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const officeKeys = new MemoryKeyStore(OFFICE);
+    const office = await agentFor(officeKeys, 'office');
+
+    const err = await pairAs(office.agent, h.server, '42').catch((e) => e);
+    expect(err).toBeInstanceOf(PairingError);
+    expect(err.code).toBe('account_already_paired');
+    expect(err.message).toMatch(/Juan dela Cruz's Test Signing App signature is on Juan’s MacBook Pro/);
+    expect(err.manageUrl).toBe(`${h.server.origin}/devices`);
+    expect(officeKeys.keys.size).toBe(0);
+    expect(officeKeys.prompts).toEqual([]);
+    expect(office.store.list()).toEqual([]);
+    expect([...h.server.devices.values()]).toHaveLength(1);
+  });
+
+  it('still refuses at claim when the server is too old to say at lookup', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const patched = h.server as unknown as { lookup: (json: object) => Record<string, unknown> };
+    const lookup = patched.lookup.bind(h.server);
+    patched.lookup = (json) => ({ ...lookup(json), agent_device: undefined, devices_url: undefined });
+    const officeKeys = new MemoryKeyStore(OFFICE);
+    const office = await agentFor(officeKeys, 'office');
+
+    const err = await pairAs(office.agent, h.server, '42').catch((e) => e);
+    expect(err.code).toBe('account_already_paired');
+    expect(err.message).toMatch(/signature is on Juan’s MacBook Pro/);
+    expect(err.manageUrl).toBe(h.server.origin);
+    expect(officeKeys.keys.size).toBe(0);
+  });
+
+  it('refuses when there is no hardware id to prove it is the same computer', async () => {
+    const h = await setup({ keystore: { device: { hardwareUuid: '' } } });
+    await h.pairNow();
+
+    const err = await pairAs(h.agent, h.server, '42', { confirmRepair: async () => true }).catch((e) => e);
+    expect(err.code).toBe('account_already_paired');
+  });
+
+  it('sends people only to a devices page on the server itself', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const patched = h.server as unknown as { lookup: (json: object) => Record<string, unknown> };
+    const lookup = patched.lookup.bind(h.server);
+    patched.lookup = (json) => ({ ...lookup(json), devices_url: 'https://elsewhere.example/devices' });
+    const office = await agentFor(new MemoryKeyStore(OFFICE), 'office');
+
+    const err = await pairAs(office.agent, h.server, '42').catch((e) => e);
+    expect(err.manageUrl).toBe(h.server.origin);
+  });
+
+  it('pairs the other computer once the first is unpaired', async () => {
+    const h = await setup();
+    await h.pairNow();
+    await h.agent.unpair('test-server');
+    const office = await agentFor(new MemoryKeyStore(OFFICE), 'office');
+
+    await pairAs(office.agent, h.server, '42');
+    expect(office.store.list()[0]).toMatchObject({ userId: '42', deviceLabel: 'Office Mac mini' });
+  });
+
+  it('holds the account until a revoke queued offline reaches the server', async () => {
+    const h = await setup();
+    await h.pairNow();
+    h.server.failNextUnpair = true;
+    await h.agent.unpair('test-server', { offline: 'remove' });
+    const office = await agentFor(new MemoryKeyStore(OFFICE), 'office');
+
+    expect((await pairAs(office.agent, h.server, '42').catch((e) => e)).code).toBe('account_already_paired');
+
+    await h.agent.retryRevokes(h.server.origin);
+    await pairAs(office.agent, h.server, '42');
+    expect(office.store.list()).toHaveLength(1);
+  });
+});
+
 describe('device types', () => {
   it('reports the detected type and stores what the server confirmed', async () => {
     const h = await setup({ keystore: { device: { model: 'Mac mini (2024)', modelIdentifier: 'Mac16,10', formFactor: 'desktop' } } });
@@ -503,27 +586,79 @@ describe('device types', () => {
 });
 
 describe('other devices', () => {
-  it("lists the account's other computers for each app", async () => {
+  it("lists the account's other devices for each app", async () => {
     const h = await setup();
     await h.pairNow();
-    const office = await agentFor(new MemoryKeyStore({ device: { hardwareUuid: 'OFFICE-MINI', hostname: 'Office Mac mini', model: 'Mac mini (2024)' } }), 'office');
-    await pairAs(office.agent, h.server, '42');
+    // A browser the same account signs in: one computer per account, but any number of browsers.
+    const [paired] = [...h.server.devices.values()];
+    h.server.devices.set('browser', { ...paired, uuid: 'browser', label: 'Chrome on Mac', deviceType: 'desktop', hardwareIdHash: null });
 
     expect(await h.agent.refreshOtherDevices(true)).toBe(true);
-    expect(h.agent.servers()[0].otherDevices).toEqual([{ label: 'Office Mac mini', deviceType: 'mac_mini' }]);
+    expect(h.agent.servers()[0].otherDevices).toEqual([{ label: 'Chrome on Mac', deviceType: 'desktop' }]);
     // Throttled: a second call within a minute doesn't ask again.
     expect(await h.agent.refreshOtherDevices()).toBe(false);
   });
 });
 
 describe('unpair while the server is unreachable', () => {
+  it('changes nothing by default, so the UI can ask', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const before = h.store.list()[0];
+    const keysBefore = [...h.keystore.keys.keys()];
+    h.server.failNextUnpair = true;
+
+    expect(await h.agent.unpair('test-server')).toEqual({ status: 'unreachable', serverName: 'Test Signing App' });
+    expect(h.store.list()).toEqual([before]);
+    expect(h.store.token('test-server')).toBeTruthy();
+    expect([...h.keystore.keys.keys()]).toEqual(keysBefore);
+    expect(h.store.pendingRevokes()).toEqual([]);
+    // Still signs once the network is back.
+    const { link } = h.server.createJob('After keeping', DOC_HASH);
+    expect(await h.agent.handleLink(link)).toMatchObject({ result: 'completed' });
+  });
+
+  it('unpairs cleanly on "remove anyway" when the server is back by then', async () => {
+    const h = await setup();
+    await h.pairNow();
+    h.server.failNextUnpair = true;
+    expect((await h.agent.unpair('test-server')).status).toBe('unreachable');
+
+    expect(await h.agent.unpair('test-server', { offline: 'remove' })).toEqual({ status: 'unpaired' });
+    expect(h.store.pendingRevokes()).toEqual([]);
+    expect(h.keystore.keys.size).toBe(0);
+    expect([...h.server.devices.values()][0].revoked).toBe(true);
+  });
+
+  it('counts a 401 as already unpaired', async () => {
+    const h = await setup();
+    await h.pairNow();
+    h.server.releaseDevice(h.store.list()[0].deviceUuid);
+
+    expect(await h.agent.unpair('test-server')).toEqual({ status: 'unpaired' });
+    expect(h.store.list()).toEqual([]);
+    expect(h.keystore.keys.size).toBe(0);
+    expect(h.store.pendingRevokes()).toEqual([]);
+  });
+
+  it('lists queued revokes for the status window, without their tokens', async () => {
+    const h = await setup();
+    await h.pairNow();
+    h.server.failNextUnpair = true;
+    await h.agent.unpair('test-server', { offline: 'remove' });
+
+    const [pending] = h.agent.pendingRevokes();
+    expect(Object.keys(pending).sort()).toEqual(['origin', 'queuedAt', 'serverName']);
+    expect(pending).toMatchObject({ origin: h.server.origin, serverName: 'Test Signing App' });
+  });
+
   it('removes the pairing and the signing key at once, and queues the revoke', async () => {
     const h = await setup();
     await h.pairNow();
     const server = h.store.list()[0];
     h.server.failNextUnpair = true;
 
-    await h.agent.unpair('test-server');
+    expect(await h.agent.unpair('test-server', { offline: 'remove' })).toEqual({ status: 'removed_locally' });
     expect(h.store.list()).toEqual([]);
     expect(h.store.pendingRevokes()).toMatchObject([{ serverId: 'test-server', deviceUuid: server.deviceUuid }]);
     // The signing key is gone; only the session key stays, to authenticate the retry.
@@ -540,7 +675,7 @@ describe('unpair while the server is unreachable', () => {
     const h = await setup();
     await h.pairNow();
     h.server.failNextUnpair = true;
-    await h.agent.unpair('test-server');
+    await h.agent.unpair('test-server', { offline: 'remove' });
     h.server.failNextUnpair = true;
     await h.agent.retryRevokes();
     expect(h.store.pendingRevokes()).toHaveLength(1);
@@ -551,7 +686,7 @@ describe('unpair while the server is unreachable', () => {
     await h.pairNow();
     const { deviceUuid } = h.store.list()[0];
     h.server.failNextUnpair = true;
-    await h.agent.unpair('test-server');
+    await h.agent.unpair('test-server', { offline: 'remove' });
     h.server.releaseDevice(deviceUuid); // revoked on the web meanwhile: the token now gets a 401
 
     await h.agent.retryRevokes();
@@ -563,7 +698,7 @@ describe('unpair while the server is unreachable', () => {
     const h = await setup({ server: TWO_USERS });
     await h.pairNow();
     h.server.failNextUnpair = true;
-    await h.agent.unpair('test-server');
+    await h.agent.unpair('test-server', { offline: 'remove' });
 
     // Without the retry, the server would still count this computer as Juan's.
     await pairAs(h.agent, h.server, '7');
