@@ -84,11 +84,40 @@ std::string hexEncode(const Bytes& data) {
     return out;
 }
 
+namespace {
+// Firmware placeholder UUIDs that many boards ship with. Hashing one would
+// make different computers look like the same one, so they count as no id
+// (one-computer-per-account-plan.md §14). Keep in step with
+// test/fixtures/placeholder-uuids.json, which the package checks too.
+const char* const kPlaceholderUuids[] = {
+    "03000200-0400-0500-0006-000700080009",
+    "00020003-0004-0005-0006-000700080009",
+    "12345678-1234-5678-90AB-CDDEEFAABBCC",
+    "01234567-8910-1112-1314-151617181920",
+    "11111111-2222-3333-4444-555555555555",
+};
+
+// `upper` is upper-case. Also catches any UUID of one repeated digit
+// (all 0s, all Fs, …).
+bool isPlaceholderUuid(const std::string& upper) {
+    std::string digits;
+    for (char c : upper) {
+        if (c != '-') digits.push_back(c);
+    }
+    if (digits.empty() || digits.find_first_not_of(digits[0]) == std::string::npos) return true;
+    for (const char* placeholder : kPlaceholderUuids) {
+        if (upper == placeholder) return true;
+    }
+    return false;
+}
+}  // namespace
+
 std::string saltedHardwareHash(const std::string& salt, const std::string& uuid) {
     if (uuid.empty()) return "";
     std::string upper = uuid;
     std::transform(upper.begin(), upper.end(), upper.begin(),
                    [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    if (isPlaceholderUuid(upper)) return "";
     Bytes input(salt.begin(), salt.end());
     input.insert(input.end(), upper.begin(), upper.end());
     return hexEncode(sha256(input));

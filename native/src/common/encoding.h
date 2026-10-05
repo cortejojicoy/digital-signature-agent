@@ -20,7 +20,8 @@ std::string hexEncode(const Bytes& data);
 Bytes sha256(const Bytes& data);
 
 // sha256_hex(salt_utf8 || uuid_utf8). The raw hardware UUID never leaves the
-// addon (desktop-agent-plan.md §10.4).
+// addon (desktop-agent-plan.md §10.4). "" for no UUID or a firmware
+// placeholder shared by many boards.
 std::string saltedHardwareHash(const std::string& salt, const std::string& uuid);
 
 }  // namespace ks
