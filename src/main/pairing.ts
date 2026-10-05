@@ -6,11 +6,13 @@
 // Each pairing gets fresh keys under a new key id, so a failed re-pair never
 // breaks the existing pairing; the old keys are deleted only after success.
 //
-// One signature per app per computer (multi-app-pairing-plan.md §1.1): right
-// after the lookup, before any key or OS prompt, pairing stops if this
-// computer already holds a different account's signature for the app, or if
-// the server doesn't allow this kind of device. The server enforces both
-// again at claim; these checks just fail early and explain why.
+// One signature per app per computer (multi-app-pairing-plan.md §1.1), and
+// one computer per account (one-computer-per-account-plan.md): right after
+// the lookup, before any key or OS prompt, pairing stops if this computer
+// already holds a different account's signature for the app, if the account
+// is already paired with another computer, or if the server doesn't allow
+// this kind of device. The server enforces all three again at claim; these
+// checks just fail early and explain why.
 import { randomBytes } from 'node:crypto';
 
 import { ApiError, type AgentApi, type PairingLookup } from './api';
@@ -43,6 +45,7 @@ export type PairingErrorCode =
   | 'aborted'
   | 'app_already_paired'
   | 'machine_already_paired'
+  | 'account_already_paired'
   | 'device_type_not_allowed';
 
 export class PairingError extends Error {
@@ -51,6 +54,8 @@ export class PairingError extends Error {
     message: string,
     /** The pairing in the way, for app_already_paired: the UI offers to unpair it. */
     readonly serverId?: string,
+    /** For account_already_paired: the web page where the other computer can be removed. */
+    readonly manageUrl?: string,
   ) {
     super(message);
   }
@@ -99,6 +104,13 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
 
   const existing = store.get(server.id);
   if (existing && existing.userId !== userId) throw alreadyPairedError(existing);
+
+  const manageUrl = devicesUrl(lookup.devices_url, api.origin);
+  const computer = lookup.agent_device;
+  if (computer && !sameComputer(computer.hardware_id_hash, device.hardwareIdHash)) {
+    throw accountPairedError(server.name, lookup.user_name, computer.label, manageUrl);
+  }
+
   if (existing) {
     progress({ stage: 'already_paired_locally', serverName: server.name, userName: existing.userName });
     const repair = opts.confirmRepair ? await opts.confirmRepair(existing) : true;
@@ -169,7 +181,7 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
       agent_version: deps.agentVersion,
       proof: proof.toString('base64'),
     }).catch((err: unknown) => {
-      throw fromClaimError(err, server.name, deviceType);
+      throw fromClaimError(err, server.name, deviceType, lookup.user_name, manageUrl);
     });
 
     const replaces = claim.existing_device;
@@ -266,6 +278,34 @@ function alreadyPairedError(existing: PairedServer): PairingError {
   );
 }
 
+/** Only matching hashes prove it's the same computer; a missing one proves nothing. */
+function sameComputer(a: string | null | undefined, b: string | null | undefined): boolean {
+  return !!a && !!b && a === b;
+}
+
+/** The server's devices page, only if it's on the server's own origin. */
+function devicesUrl(url: string | undefined, origin: string): string {
+  try {
+    if (url && new URL(url).origin === origin) return url;
+  } catch {
+    // fall through
+  }
+  return origin;
+}
+
+function accountPairedError(serverName: string, userName: string | undefined, label: unknown, manageUrl: string): PairingError {
+  const computer = typeof label === 'string' && label.trim() ? label.trim() : 'another computer';
+  const whose = userName ? `${userName}'s` : 'Your';
+  return new PairingError(
+    'account_already_paired',
+    `Your account is already paired with another computer. ${whose} ${serverName} signature is on ${computer}. ` +
+      'One account can be paired with only one computer. ' +
+      `To use this computer instead, remove ${computer} from My signing devices on the web, then pair again.`,
+    undefined,
+    manageUrl,
+  );
+}
+
 function blockedError(deviceType: DeviceType, serverName: string): PairingError {
   return new PairingError(
     'device_type_not_allowed',
@@ -276,8 +316,18 @@ function blockedError(deviceType: DeviceType, serverName: string): PairingError 
 }
 
 /** The server's refusals at claim, in the same words as the local checks. */
-function fromClaimError(err: unknown, serverName: string, deviceType: DeviceType): unknown {
+function fromClaimError(
+  err: unknown,
+  serverName: string,
+  deviceType: DeviceType,
+  userName: string | undefined,
+  manageUrl: string,
+): unknown {
   if (!(err instanceof ApiError)) return err;
+  if (err.code === 'account_already_paired') {
+    const device = err.details.device as { label?: unknown } | undefined;
+    return accountPairedError(serverName, userName, device?.label, manageUrl);
+  }
   if (err.code === 'machine_already_paired') {
     return new PairingError(
       'machine_already_paired',
