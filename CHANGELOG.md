@@ -15,6 +15,8 @@ When tagging a release, rename `Unreleased` to the version, e.g.
 - Virtual machines can't pair by default
 - Unpairing offline now finishes once you're back online
 - One computer per account for each app: pairing a second computer tells you which one to remove first
+- Re-pairing works on computers without a hardware id, and after a logic-board swap
+- PCs that share a placeholder firmware id are no longer mistaken for one computer
 - Unpairing while the app can't be reached now asks before removing your signature
 - The status window lists unpairs the app hasn't heard about yet, with Retry now
 - Windows fit their content instead of a fixed size
