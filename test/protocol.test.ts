@@ -33,6 +33,25 @@ describe('parseLink', () => {
     expect(parseLink(raw)).toBeNull();
   });
 
+  it('accepts the presence link shape', () => {
+    expect(parseLink(`kukuxsign://presence/${UUID}?t=${TOKEN}&s=test-server`)).toEqual({
+      kind: 'presence',
+      checkId: UUID,
+      token: TOKEN,
+      serverId: 'test-server',
+    });
+  });
+
+  it.each([
+    ['bad uuid', `kukuxsign://presence/nope?t=${TOKEN}&s=a`],
+    ['short token', `kukuxsign://presence/${UUID}?t=abc&s=a`],
+    ['missing server', `kukuxsign://presence/${UUID}?t=${TOKEN}`],
+    ['extra parameter', `kukuxsign://presence/${UUID}?t=${TOKEN}&s=a&x=1`],
+    ['extra path segment', `kukuxsign://presence/${UUID}/x?t=${TOKEN}&s=a`],
+  ])('drops a presence link with %s', (_name, raw) => {
+    expect(parseLink(raw)).toBeNull();
+  });
+
   it('accepts a pair link with an HTTPS origin', () => {
     expect(parseLink('kukuxsign://pair?o=https%3A%2F%2Fsign.example.gov.ph&c=k7qm2xpd')).toEqual({
       kind: 'pair',

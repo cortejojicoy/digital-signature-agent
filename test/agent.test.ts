@@ -253,6 +253,40 @@ describe('signing jobs', () => {
   });
 });
 
+describe('presence checks', () => {
+  it('reports in silently for the account it is paired with', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const { uuid, link } = h.server.createPresenceCheck();
+    const promptsBefore = h.keystore.prompts.length;
+
+    expect(await h.agent.handleLink(link)).toBeNull();
+
+    expect(h.server.presence.get(uuid)).toMatchObject({ status: 'confirmed', deviceUuid: h.store.list()[0].deviceUuid });
+    // No confirm window and no Touch ID / Hello prompt: it signs nothing.
+    expect(h.confirms).toHaveLength(0);
+    expect(h.keystore.prompts).toHaveLength(promptsBefore);
+  });
+
+  it("lets the server see it's another account's computer", async () => {
+    const h = await setup({ server: { users: [{ id: '42', name: 'Juan' }, { id: '7', name: 'Maria' }] } });
+    await h.pairNow();
+    const { uuid, link } = h.server.createPresenceCheck('7');
+
+    expect(await h.agent.handleLink(link)).toBeNull();
+    expect(h.server.presence.get(uuid)!.status).toBe('other_account');
+  });
+
+  it('ignores a check from a server it is not paired with', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const { uuid, link } = h.server.createPresenceCheck();
+
+    expect(await h.agent.handleLink(link.replace('s=test-server', 's=other-server'))).toBeNull();
+    expect(h.server.presence.get(uuid)!.status).toBe('pending');
+  });
+});
+
 describe('request authentication', () => {
   it('a token without the session key is useless', async () => {
     const h = await setup();

@@ -133,6 +133,14 @@ function normalizeCode(code: string): string {
   return String(code).toUpperCase().replace(/[\s-]/g, '');
 }
 
+interface PresenceCheck {
+  uuid: string;
+  userId: string;
+  linkTokenHash: string;
+  status: 'pending' | 'confirmed' | 'other_account';
+  deviceUuid: string | null;
+}
+
 export class MockSigningServer {
   origin = '';
   readonly serverId: string;
@@ -150,6 +158,7 @@ export class MockSigningServer {
   readonly devices = new Map<string, Device>();
   readonly tokens = new Map<string, string>(); // sha256(token) → device uuid
   readonly jobs = new Map<string, Job>();
+  readonly presence = new Map<string, PresenceCheck>();
   readonly seenRequestNonces = new Set<string>();
   private readonly http = createServer((req, res) => void this.route(req, res));
   private readonly now: () => number;
@@ -311,6 +320,14 @@ export class MockSigningServer {
     return { uuid: job.uuid, linkToken, link };
   }
 
+  /** What the web page does before it lets someone sign: ask whether the paired computer is here. */
+  createPresenceCheck(userId = this.users[0].id): { uuid: string; link: string } {
+    const linkToken = b64url(32);
+    const check: PresenceCheck = { uuid: randomUUID(), userId, linkTokenHash: sha256(linkToken), status: 'pending', deviceUuid: null };
+    this.presence.set(check.uuid, check);
+    return { uuid: check.uuid, link: `kukuxsign://presence/${check.uuid}?t=${linkToken}&s=${this.serverId}` };
+  }
+
   // ── HTTP ──
 
   private async route(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -371,6 +388,9 @@ export class MockSigningServer {
       }
       if (method === 'POST' && (m = /^\/signature\/agent\/jobs\/([^/]+)\/reject$/.exec(path))) {
         return send(res, 200, this.rejectJob(device, m[1], json));
+      }
+      if (method === 'POST' && (m = /^\/signature\/agent\/presence\/([^/]+)$/.exec(path))) {
+        return send(res, 200, this.reportPresence(device, m[1], json));
       }
       throw new HttpError(404, 'not_found', 'Not found.');
     } catch (err) {
@@ -525,6 +545,21 @@ export class MockSigningServer {
     job.status = 'completed';
     job.result = { device_uuid: device.uuid, protection: device.protection, label: device.label };
     return { status: job.status };
+  }
+
+  private reportPresence(device: Device, uuid: string, json: { link_token?: string }) {
+    const check = this.presence.get(uuid);
+    if (!check) throw new HttpError(404, 'presence_not_found', 'Presence check not found.');
+    if (check.status !== 'pending') throw new HttpError(409, 'presence_unavailable', `Presence check is ${check.status}.`);
+    if (sha256(String(json.link_token ?? '')) !== check.linkTokenHash) throw new HttpError(403, 'invalid_link_token', 'Invalid link.');
+    check.linkTokenHash = ''; // single use
+    check.deviceUuid = device.uuid;
+    if (device.userId !== check.userId) {
+      check.status = 'other_account';
+      throw new HttpError(403, 'wrong_account', 'This computer is paired with another account.');
+    }
+    check.status = 'confirmed';
+    return { status: check.status };
   }
 
   private rejectJob(device: Device, uuid: string, json: { reason?: string }) {
