@@ -67,6 +67,12 @@ export interface PairingClaim {
   };
   agent_version: string;
   proof: string;
+  /**
+   * Re-pairing the same account: the existing device, and a `rebind_agent`
+   * proof by its session key. Proves this is the same computer even without
+   * a hardware id (one-computer-per-account-plan.md §13).
+   */
+  replaces?: { device_uuid: string; proof: string } | null;
 }
 
 /** The server's device for this computer and user, which a re-pair updates (§7.2). */

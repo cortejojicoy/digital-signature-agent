@@ -107,7 +107,10 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
 
   const manageUrl = devicesUrl(lookup.devices_url, api.origin);
   const computer = lookup.agent_device;
-  if (computer && !sameComputer(computer.hardware_id_hash, device.hardwareIdHash)) {
+  // This install's own pairing for the account can prove it's the same
+  // computer at claim (rebind proof), whatever the hardware hash says.
+  const ownDevice = !!existing && existing.deviceUuid === computer?.uuid;
+  if (computer && !ownDevice && !sameComputer(computer.hardware_id_hash, device.hardwareIdHash)) {
     throw accountPairedError(server.name, lookup.user_name, computer.label, manageUrl);
   }
 
@@ -151,6 +154,7 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
     );
     opts.signal?.throwIfAborted();
     const proof = await keystore.sign(identityKeyId, Buffer.from(message, 'utf8'), `pair this computer with ${server.name}`);
+    const rebind = existing ? await rebindProof(keystore, existing, lookup, identity.spki, session.spki) : null;
 
     const claim = await api.claimPairing(lookup.pairing, {
       user_code: code,
@@ -180,6 +184,7 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
       },
       agent_version: deps.agentVersion,
       proof: proof.toString('base64'),
+      replaces: rebind,
     }).catch((err: unknown) => {
       throw fromClaimError(err, server.name, deviceType, lookup.user_name, manageUrl);
     });
@@ -276,6 +281,28 @@ function alreadyPairedError(existing: PairedServer): PairingError {
     `This computer already holds ${holder} signature for ${existing.name}. Unpair it first to pair a different account.`,
     existing.id,
   );
+}
+
+/**
+ * The existing pairing's session key signs the new keys: only the computer
+ * holding that key (Secure Enclave / TPM, not exportable) can, so the server
+ * may rebind its device even with no or a changed hardware id. No OS prompt.
+ * Best effort: without it the server falls back to the hardware hash.
+ */
+async function rebindProof(
+  keystore: KeyStore,
+  existing: PairedServer,
+  lookup: PairingLookup,
+  identitySpki: Buffer,
+  sessionSpki: Buffer,
+): Promise<{ device_uuid: string; proof: string } | null> {
+  try {
+    const message = canonicalMessage('rebind_agent', lookup.nonce, lookup.user_id, registrationPayloadHash(identitySpki, sessionSpki));
+    const proof = await keystore.sign(existing.sessionKeyId, Buffer.from(message, 'utf8'), 'authenticate with the server');
+    return { device_uuid: existing.deviceUuid, proof: proof.toString('base64') };
+  } catch {
+    return null;
+  }
 }
 
 /** Only matching hashes prove it's the same computer; a missing one proves nothing. */

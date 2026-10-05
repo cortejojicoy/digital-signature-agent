@@ -5,7 +5,7 @@
 //   v1|<purpose>|<nonce_b64url>|<user_id>|<payload_hash_hex>
 import { createHash } from 'node:crypto';
 
-export type Purpose = 'register_agent' | 'sign_receipt' | 'request';
+export type Purpose = 'register_agent' | 'rebind_agent' | 'sign_receipt' | 'request';
 
 const PURPOSE = /^[a-z_]{1,64}$/;
 const NONCE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -27,7 +27,7 @@ export function sha256Hex(data: string | Buffer): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
-/** Payload for `register_agent`: binds both public keys to the pairing. */
+/** Payload for `register_agent` and `rebind_agent`: binds both new public keys to the pairing. */
 export function registrationPayloadHash(identitySpki: Buffer, sessionSpki: Buffer): string {
   return sha256Hex(Buffer.concat([identitySpki, sessionSpki]));
 }
