@@ -76,6 +76,9 @@ function main(): void {
   let pairingAbort: AbortController | null = null;
   // Resolves the "already paired here: re-pair?" question of the running pairing.
   let repairAnswer: ((repair: boolean) => void) | null = null;
+  // The devices page from the last account_already_paired failure. The
+  // renderer can only ask to open this one, never a URL of its own.
+  let devicesPage: string | null = null;
   let settings: SettingsStore | null = null;
   // Developer mode: plain http:// to local-network apps. Always on under npm run dev.
   let developerMode = DEV;
@@ -412,6 +415,7 @@ function main(): void {
         platform: process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'other',
         capabilities: await agent!.capabilities(),
         servers: agent!.servers(),
+        pendingRevokes: agent!.pendingRevokes(),
         developerMode: { on: developerMode, locked: DEV },
       };
     });
@@ -420,6 +424,7 @@ function main(): void {
       pairingAbort?.abort();
       const abort = new AbortController();
       pairingAbort = abort;
+      devicesPage = null;
       try {
         let rebound = false;
         const server = await agent!.pair(input.origin, input.code, {
@@ -438,7 +443,15 @@ function main(): void {
       } catch (err) {
         if (err instanceof PairingError) {
           const blocking = err.serverId ? agent!.servers().find((s) => s.id === err.serverId) : undefined;
-          return { ok: false, error: err.message, code: err.code, serverId: err.serverId, serverName: blocking?.name };
+          devicesPage = err.manageUrl ?? null;
+          return {
+            ok: false,
+            error: err.message,
+            code: err.code,
+            serverId: err.serverId,
+            serverName: blocking?.name,
+            manageUrl: err.manageUrl,
+          };
         }
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       } finally {
@@ -477,7 +490,13 @@ function main(): void {
 
     handle(IPC.approveJob, (id: string) => decide(id, true));
     handle(IPC.rejectJob, (id: string) => decide(id, false));
-    handle(IPC.unpair, (serverId: string) => agent!.unpair(serverId));
+    handle(IPC.unpair, (serverId: string, opts?: { offline?: unknown }) =>
+      agent!.unpair(String(serverId), { offline: opts?.offline === 'remove' ? 'remove' : 'ask' }),
+    );
+    handle(IPC.retryRevokes, (origin: string) => agent!.retryRevokes(String(origin)));
+    handle(IPC.openDevicesPage, async () => {
+      if (devicesPage) await shell.openExternal(devicesPage);
+    });
     handle(IPC.setDeveloperMode, (on: boolean) => setDeveloperMode(on === true));
     handle(IPC.getUpdate, () => getUpdateStatus());
     handle(IPC.checkForUpdates, () => checkForUpdates());
