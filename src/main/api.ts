@@ -212,6 +212,11 @@ export class AgentApi {
     return this.request('POST', `${BASE}/jobs/${encodeURIComponent(jobId)}/reject`, { reason }, creds);
   }
 
+  /** Answers a presence check: "this computer, paired as this account, is here". */
+  reportPresence(creds: Credentials, checkId: string, linkToken: string): Promise<{ status: string }> {
+    return this.request('POST', `${BASE}/presence/${encodeURIComponent(checkId)}`, { link_token: linkToken }, creds);
+  }
+
   /** Revokes this device's token on the server. */
   unpair(creds: Credentials): Promise<void> {
     return this.request('DELETE', `${BASE}/device`, undefined, creds);

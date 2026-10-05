@@ -6,7 +6,7 @@ import { detectDeviceType, isDeviceType, type DeviceType } from './device-type';
 import { JobRunner, type ConfirmRequest, type JobOutcome } from './jobs';
 import type { Capabilities, KeyStore } from './keystore';
 import { deleteKeys, pair, type PairOptions } from './pairing';
-import { normalizeOrigin, normalizeUserCode, parseLink, type OriginPolicy, type PairLink } from './protocol';
+import { normalizeOrigin, normalizeUserCode, parseLink, type OriginPolicy, type PairLink, type PresenceLink } from './protocol';
 import type { PairedServer, PendingRevoke, Store } from './store';
 
 export interface AgentOptions extends OriginPolicy {
@@ -218,9 +218,29 @@ export class Agent {
       this.options.onPairLink?.(link);
       return null;
     }
+    if (link.kind === 'presence') {
+      await this.reportPresence(link);
+      return null;
+    }
     const outcome = await this.jobs.handle(link);
     this.options.onJobOutcome?.(outcome);
     return outcome;
+  }
+
+  /**
+   * Answers a presence check, silently: no window, no OS prompt. The web
+   * page only learns "the paired computer is here" from the server, which
+   * checks the account; a server this computer isn't paired with is ignored.
+   */
+  private async reportPresence(link: PresenceLink): Promise<void> {
+    const server = this.options.store.get(link.serverId);
+    if (!server) return;
+    try {
+      await this.apiFor(server.origin).reportPresence(this.credentialsFor(server), link.checkId, link.token);
+    } catch {
+      // Nothing to tell the user here: the page waiting on the check says
+      // what happened (another account, expired check).
+    }
   }
 
   /**

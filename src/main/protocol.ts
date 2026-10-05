@@ -14,13 +14,26 @@ export interface JobLink {
   serverId: string;
 }
 
+/**
+ * "Is this the computer you're paired on?" The web page opens it before it
+ * lets someone sign; the agent answers by reporting in to the server. Same
+ * shape and trust as a job link: an opaque id, a one-time token, a paired
+ * server's id. It carries no content and needs no confirmation.
+ */
+export interface PresenceLink {
+  kind: 'presence';
+  checkId: string;
+  token: string;
+  serverId: string;
+}
+
 export interface PairLink {
   kind: 'pair';
   origin: string;
   code: string;
 }
 
-export type AgentLink = JobLink | PairLink;
+export type AgentLink = JobLink | PresenceLink | PairLink;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/; // 32 random bytes, base64url, no padding
@@ -58,6 +71,15 @@ export function parseLink(raw: string, policy: OriginPolicy = {}): AgentLink | n
     const serverId = params.get('s') ?? '';
     if (!UUID.test(jobId) || !TOKEN.test(token) || !SERVER_ID.test(serverId)) return null;
     return { kind: 'job', jobId, token, serverId };
+  }
+
+  if (segments[0] === 'presence' && segments.length === 2) {
+    if (!onlyParams(params, ['t', 's'])) return null;
+    const checkId = segments[1].toLowerCase();
+    const token = params.get('t') ?? '';
+    const serverId = params.get('s') ?? '';
+    if (!UUID.test(checkId) || !TOKEN.test(token) || !SERVER_ID.test(serverId)) return null;
+    return { kind: 'presence', checkId, token, serverId };
   }
 
   if (segments[0] === 'pair' && segments.length === 1) {
