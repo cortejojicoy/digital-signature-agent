@@ -1,9 +1,12 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { categoryOf, DEVICE_TYPES, detectDeviceType, isDeviceType, type DeviceType } from '../src/main/device-type';
 import type { DeviceInfo } from '../src/main/keystore';
 import { deviceTypeLabel } from '../src/renderer/labels';
 import catalogue from './fixtures/device-types.json';
+import placeholders from './fixtures/placeholder-uuids.json';
 
 function mac(model: string, modelIdentifier: string, formFactor: DeviceInfo['formFactor'] = 'unknown', extra: Partial<DeviceInfo> = {}): DeviceInfo {
   return { platform: 'macos', osVersion: '15.1.0', model, modelIdentifier, formFactor, hostname: 'Mac', hardwareIdHash: '', chassisType: null, virtual: false, ...extra };
@@ -113,5 +116,15 @@ describe('Windows', () => {
 
   it('detects a VM from the SMBIOS flag alone', () => {
     expect(detectDeviceType(pc('ACME Desktop', 3, 'desktop', { virtual: true }))).toBe('virtual_machine');
+  });
+});
+
+// ── Firmware placeholder UUIDs (one-computer-per-account-plan.md §14) ──
+
+describe('placeholder hardware uuids', () => {
+  it('lists the shared fixture in the native addon, which hashes them as no id', () => {
+    const native = readFileSync(new URL('../native/src/common/encoding.cc', import.meta.url), 'utf8');
+    const listed = [...native.matchAll(/"([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})"/g)].map((m) => m[1]);
+    expect(listed).toEqual(placeholders.uuids);
   });
 });

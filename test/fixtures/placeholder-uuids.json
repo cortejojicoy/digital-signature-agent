@@ -1,0 +1,10 @@
+{
+  "comment": "Firmware placeholder UUIDs treated as no hardware id (one-computer-per-account-plan.md §14), besides any UUID of one repeated hex digit. Shared with the package (tests/Fixtures/placeholder-uuids.json); the native list in native/src/common/encoding.cc must match.",
+  "uuids": [
+    "03000200-0400-0500-0006-000700080009",
+    "00020003-0004-0005-0006-000700080009",
+    "12345678-1234-5678-90AB-CDDEEFAABBCC",
+    "01234567-8910-1112-1314-151617181920",
+    "11111111-2222-3333-4444-555555555555"
+  ]
+}

@@ -48,6 +48,8 @@ interface Pairing {
   tokenIssued?: boolean;
   /** Same computer, same user: confirming updates this device instead of adding one. */
   replacesDeviceUuid?: string;
+  /** The device whose session key signed the new keys at claim (rebind proof). */
+  provenDeviceUuid?: string;
 }
 
 export interface Device {
@@ -208,7 +210,9 @@ export class MockSigningServer {
     // Re-check under "the lock": another pairing may have taken this computer meanwhile.
     const holder = this.activeDeviceFor(c.device?.hardware_id_hash ?? null);
     if (holder && holder.userId !== p.userId) throw new Error('machine_already_paired');
-    if (this.blockingComputer(p.userId, c.device?.hardware_id_hash ?? null)) throw new Error('account_already_paired');
+    const proven = p.provenDeviceUuid ? this.devices.get(p.provenDeviceUuid) : undefined;
+    const stillProven = proven && !proven.revoked ? proven : undefined;
+    if (this.blockingComputer(p.userId, c.device?.hardware_id_hash ?? null, stillProven)) throw new Error('account_already_paired');
 
     const keys = {
       algorithm: c.algorithm,
@@ -223,10 +227,10 @@ export class MockSigningServer {
       virtual: !!c.device?.virtual,
       agentVersion: c.agent_version,
     };
-    const existing = holder && holder.userId === p.userId ? holder : null;
+    const existing = stillProven ?? (holder && holder.userId === p.userId ? holder : null);
     if (existing) {
       // Rebind: same uuid and label, new keys; the old token stops working.
-      Object.assign(existing, keys, { rebound: true });
+      Object.assign(existing, keys, { rebound: true, hardwareIdHash: c.device?.hardware_id_hash ?? null });
       for (const [hash, uuid] of this.tokens) if (uuid === existing.uuid) this.tokens.delete(hash);
       p.status = 'confirmed';
       p.deviceUuid = existing.uuid;
@@ -261,9 +265,24 @@ export class MockSigningServer {
     return [...this.devices.values()].filter((d) => !d.revoked && d.userId === userId).reverse();
   }
 
-  /** The user's computer that keeps them from pairing this one: any that isn't provably this computer. */
-  private blockingComputer(userId: string, hardwareIdHash: string | null): Device | undefined {
-    return this.activeDevicesOf(userId).find((d) => !hardwareIdHash || d.hardwareIdHash !== hardwareIdHash);
+  /**
+   * The user's computer that keeps them from pairing this one: any that isn't
+   * provably this computer, by the rebind proof or a matching hardware id.
+   */
+  private blockingComputer(userId: string, hardwareIdHash: string | null, proven?: Device): Device | undefined {
+    return this.activeDevicesOf(userId).find((d) => d !== proven && (!hardwareIdHash || d.hardwareIdHash !== hardwareIdHash));
+  }
+
+  /** The user's device whose session key signed the new keys (`rebind_agent`); a bad proof is refused. */
+  private provenDevice(p: Pairing, replaces: unknown, bound: string): Device | undefined {
+    const r = replaces as { device_uuid?: unknown; proof?: unknown } | null | undefined;
+    if (!r || typeof r.device_uuid !== 'string') return undefined;
+    const device = this.devices.get(r.device_uuid);
+    if (!device || device.revoked || device.userId !== p.userId) return undefined;
+    if (!verifyProof('ES256', device.sessionKey, canonical('rebind_agent', p.nonce, p.userId, bound), String(r.proof ?? ''))) {
+      throw new HttpError(422, 'invalid_proof', 'The re-pairing proof did not verify.');
+    }
+    return device;
   }
 
   /** The active agent device on this computer for this app, whoever owns it. */
@@ -389,7 +408,8 @@ export class MockSigningServer {
     if (c.algorithm !== 'ES256' && c.algorithm !== 'RS256') throw new HttpError(422, 'invalid_algorithm', 'Unsupported algorithm.');
     const identity = Buffer.from(String(c.identity_public_key ?? ''), 'base64');
     const session = Buffer.from(String(c.session_public_key ?? ''), 'base64');
-    const message = canonical('register_agent', p.nonce, p.userId, sha256(Buffer.concat([identity, session])));
+    const bound = sha256(Buffer.concat([identity, session]));
+    const message = canonical('register_agent', p.nonce, p.userId, bound);
     if (!verifyProof(c.algorithm, c.identity_public_key, message, c.proof)) {
       throw new HttpError(422, 'invalid_proof', 'The registration proof did not verify.');
     }
@@ -406,7 +426,8 @@ export class MockSigningServer {
       throw new HttpError(409, 'machine_already_paired', 'This computer is already paired with another account.');
     }
     // One computer per account and app. Names only the account's own computer.
-    const blocker = this.blockingComputer(p.userId, c.device?.hardware_id_hash ?? null);
+    const proven = this.provenDevice(p, c.replaces, bound);
+    const blocker = this.blockingComputer(p.userId, c.device?.hardware_id_hash ?? null, proven);
     if (blocker) {
       throw new HttpError(409, 'account_already_paired', `Your account is already paired with ${blocker.label}.`, {
         device: { label: blocker.label, device_type: blocker.deviceType },
@@ -415,10 +436,12 @@ export class MockSigningServer {
     p.status = 'awaiting_confirmation';
     p.claim = c;
     p.pollSecret = b64url(32);
+    p.provenDeviceUuid = proven?.uuid;
+    const existing = proven ?? holder;
     return {
       status: p.status,
       poll_secret: p.pollSecret,
-      existing_device: holder ? { uuid: holder.uuid, label: holder.label, device_type: holder.deviceType } : null,
+      existing_device: existing ? { uuid: existing.uuid, label: existing.label, device_type: existing.deviceType } : null,
     };
   }
 

@@ -490,11 +490,46 @@ describe('one computer per account', () => {
     expect(officeKeys.keys.size).toBe(0);
   });
 
-  it('refuses when there is no hardware id to prove it is the same computer', async () => {
+  it('re-pairs a computer without a hardware id, on its old session key\'s word', async () => {
     const h = await setup({ keystore: { device: { hardwareUuid: '' } } });
     await h.pairNow();
+    const before = h.store.list()[0];
 
-    const err = await pairAs(h.agent, h.server, '42', { confirmRepair: async () => true }).catch((e) => e);
+    let rebound: boolean | undefined;
+    const { uuid, userCode } = h.server.startPairing();
+    await h.agent.pair(h.server.origin, userCode, {
+      confirmRepair: async () => true,
+      onProgress: (p) => {
+        if (p.stage === 'awaiting_confirmation') h.server.confirmPairing(uuid);
+        if (p.stage === 'paired') rebound = p.rebound;
+      },
+    });
+
+    expect(rebound).toBe(true);
+    expect(h.store.list()[0].deviceUuid).toBe(before.deviceUuid);
+    expect([...h.server.devices.values()]).toHaveLength(1);
+    // The rebind proof needed no OS prompt: one per pairing, for the identity key.
+    expect(h.keystore.prompts).toEqual(['pair this computer with Test Signing App', 'pair this computer with Test Signing App']);
+  });
+
+  it('follows this computer when its hardware id changed', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const before = h.store.list()[0];
+    (h.keystore as unknown as { options: MemoryKeyStoreOptions }).options.device = { hardwareUuid: 'NEW-LOGIC-BOARD' };
+
+    await pairAs(h.agent, h.server, '42', { confirmRepair: async () => true });
+    expect(h.store.list()[0].deviceUuid).toBe(before.deviceUuid);
+    expect([...h.server.devices.values()]).toHaveLength(1);
+  });
+
+  it('refuses a fresh install on a computer without a hardware id', async () => {
+    const h = await setup({ keystore: { device: { hardwareUuid: '' } } });
+    await h.pairNow();
+    // Reinstalled: the old keys are gone, so nothing can vouch for this computer.
+    const fresh = await agentFor(new MemoryKeyStore({ device: { hardwareUuid: '' } }), 'reinstall');
+
+    const err = await pairAs(fresh.agent, h.server, '42').catch((e) => e);
     expect(err.code).toBe('account_already_paired');
   });
 
