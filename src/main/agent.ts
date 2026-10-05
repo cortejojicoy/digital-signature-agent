@@ -39,6 +39,21 @@ export interface ServerSummary {
   otherDevices: Array<{ label: string; deviceType: DeviceType | null }>;
 }
 
+/** What unpair() did (one-computer-per-account-plan.md §7.1). */
+export type UnpairResult =
+  /** The server revoked the device, or had already: the server and this computer agree. */
+  | { status: 'unpaired' }
+  /** The server couldn't be reached and nothing changed: ask before removing locally. */
+  | { status: 'unreachable'; serverName: string }
+  /** Removed here anyway: the signing key is gone, and the revoke is queued. */
+  | { status: 'removed_locally' };
+
+export interface PendingRevokeSummary {
+  origin: string;
+  serverName: string;
+  queuedAt: string;
+}
+
 const OTHER_DEVICES_TTL_MS = 60_000;
 
 export class Agent {
@@ -209,21 +224,30 @@ export class Agent {
   }
 
   /**
-   * Revokes the device on the server and deletes the local keys. If the
-   * server can't be reached, the pairing still goes away here at once (the
-   * signing key with it), and the revoke is queued and retried (§7.3):
-   * otherwise the server would go on counting this computer as paired, and
-   * refuse anyone else for this app.
+   * Revokes the device on the server, then deletes the local keys. The
+   * server goes first, so the user knows whether it heard
+   * (one-computer-per-account-plan.md §7.1):
+   *
+   * - accepted, or 401 (already revoked on the web): `unpaired`.
+   * - anything else, by default: nothing changes, `unreachable`. The UI asks.
+   * - anything else, with `offline: 'remove'`: the pairing goes away here at
+   *   once, the signing key with it, and the revoke is queued and retried
+   *   (§7.3). Until it lands the server still counts this computer, so the
+   *   account can't pair another one. `removed_locally`.
+   *
+   * Never refuses outright: that would leave the signing key on a computer
+   * someone is trying to leave.
    */
-  async unpair(serverId: string): Promise<void> {
+  async unpair(serverId: string, opts: { offline?: 'ask' | 'remove' } = {}): Promise<UnpairResult> {
     const server = this.options.store.get(serverId);
-    if (!server) return;
+    if (!server) return { status: 'unpaired' };
     const token = this.options.store.token(server.id);
     try {
       await this.apiFor(server.origin).unpair(this.credentialsFor(server));
     } catch (err) {
       const alreadyGone = err instanceof ApiError && err.unauthorized;
       if (!alreadyGone && token) {
+        if (opts.offline !== 'remove') return { status: 'unreachable', serverName: server.name };
         await this.options.store.queueRevoke(
           {
             serverId: server.id,
@@ -232,6 +256,7 @@ export class Agent {
             deviceUuid: server.deviceUuid,
             sessionKeyId: server.sessionKeyId,
             queuedAt: new Date().toISOString(),
+            serverName: server.name,
           },
           token,
         );
@@ -240,10 +265,20 @@ export class Agent {
         await this.options.store.remove(server.id);
         this.otherDevices.delete(server.id);
         this.options.onServersChanged?.();
-        return;
+        return { status: 'removed_locally' };
       }
     }
     await this.forget(server);
+    return { status: 'unpaired' };
+  }
+
+  /** Unpairs the server hasn't heard about yet, for the status window. Never includes tokens. */
+  pendingRevokes(): PendingRevokeSummary[] {
+    return this.options.store.pendingRevokes().map((r) => ({
+      origin: r.origin,
+      serverName: r.serverName || hostOf(r.origin),
+      queuedAt: r.queuedAt,
+    }));
   }
 
   /**
@@ -252,6 +287,7 @@ export class Agent {
    * web, or by an admin). Anything else is left for the next try.
    */
   async retryRevokes(origin?: string): Promise<void> {
+    let changed = false;
     for (const revoke of this.options.store.pendingRevokes()) {
       if (origin !== undefined && revoke.origin !== origin) continue;
       const token = this.options.store.revokeToken(revoke.deviceUuid);
@@ -265,7 +301,9 @@ export class Agent {
       }
       await deleteKeys(this.options.keystore, [revoke.sessionKeyId]);
       await this.options.store.dropRevoke(revoke.deviceUuid);
+      changed = true;
     }
+    if (changed) this.options.onServersChanged?.();
   }
 
   private revokeCredentials(revoke: PendingRevoke, token: string): Credentials {
@@ -281,5 +319,13 @@ export class Agent {
     await this.options.store.remove(server.id);
     this.otherDevices.delete(server.id);
     this.options.onServersChanged?.();
+  }
+}
+
+function hostOf(origin: string): string {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return origin;
   }
 }
