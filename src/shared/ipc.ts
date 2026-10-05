@@ -1,8 +1,9 @@
 // IPC contract between the main process and the renderer (desktop-agent-plan.md §7.1).
 // Deliberately narrow: there is no generic sign(bytes).
+import type { PendingRevokeSummary, UnpairResult } from '../main/agent';
 import type { DeviceType } from '../main/device-type';
 
-export type { DeviceType };
+export type { DeviceType, PendingRevokeSummary, UnpairResult };
 
 export const IPC = {
   getStatus: 'agent:get-status',
@@ -13,6 +14,8 @@ export const IPC = {
   approveJob: 'agent:approve-job',
   rejectJob: 'agent:reject-job',
   unpair: 'agent:unpair',
+  retryRevokes: 'agent:retry-revokes',
+  openDevicesPage: 'agent:open-devices-page',
   setDeveloperMode: 'agent:set-developer-mode',
   getUpdate: 'agent:get-update',
   checkForUpdates: 'agent:check-for-updates',
@@ -50,6 +53,8 @@ export interface StatusView {
   platform: 'macos' | 'windows' | 'other';
   capabilities: { hardware: boolean; userPresence: boolean; attestation: boolean };
   servers: ServerView[];
+  /** Unpairs the server hasn't heard about yet (one-computer-per-account-plan.md §7.1). */
+  pendingRevokes: PendingRevokeSummary[];
   /** `locked`: always on under npm run dev. */
   developerMode: { on: boolean; locked: boolean };
 }
@@ -89,8 +94,11 @@ export type PairingProgressView =
 
 export type PairingResult =
   | { ok: true; serverName: string; rebound: boolean }
-  /** `serverId` with code app_already_paired: the pairing to unpair first. */
-  | { ok: false; error: string; code?: string; serverId?: string; serverName?: string };
+  /**
+   * `serverId` with code app_already_paired: the pairing to unpair first.
+   * `manageUrl` with code account_already_paired: openDevicesPage() opens it.
+   */
+  | { ok: false; error: string; code?: string; serverId?: string; serverName?: string; manageUrl?: string };
 
 export interface JobView {
   id: string;
@@ -121,7 +129,12 @@ export interface AgentBridge {
   getJob(id: string): Promise<JobView | null>;
   approveJob(id: string): Promise<void>;
   rejectJob(id: string): Promise<void>;
-  unpair(serverId: string): Promise<void>;
+  /** Tries the server first; `offline: 'remove'` removes locally if it can't be reached. */
+  unpair(serverId: string, opts?: { offline?: 'ask' | 'remove' }): Promise<UnpairResult>;
+  /** Retries the queued revokes for one app now. */
+  retryRevokes(origin: string): Promise<void>;
+  /** Opens the devices page from the last account_already_paired failure. */
+  openDevicesPage(): Promise<void>;
   setDeveloperMode(on: boolean): Promise<void>;
   getUpdate(): Promise<UpdateView>;
   checkForUpdates(): Promise<void>;
