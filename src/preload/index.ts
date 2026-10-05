@@ -18,7 +18,10 @@ const bridge: AgentBridge = {
   getJob: (id) => ipcRenderer.invoke(IPC.getJob, String(id)),
   approveJob: (id) => ipcRenderer.invoke(IPC.approveJob, String(id)),
   rejectJob: (id) => ipcRenderer.invoke(IPC.rejectJob, String(id)),
-  unpair: (serverId) => ipcRenderer.invoke(IPC.unpair, String(serverId)),
+  unpair: (serverId, opts) =>
+    ipcRenderer.invoke(IPC.unpair, String(serverId), { offline: opts?.offline === 'remove' ? 'remove' : 'ask' }),
+  retryRevokes: (origin) => ipcRenderer.invoke(IPC.retryRevokes, String(origin)),
+  openDevicesPage: () => ipcRenderer.invoke(IPC.openDevicesPage),
   setDeveloperMode: (on) => ipcRenderer.invoke(IPC.setDeveloperMode, on === true),
   getUpdate: () => ipcRenderer.invoke(IPC.getUpdate),
   checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
