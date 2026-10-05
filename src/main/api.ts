@@ -29,7 +29,19 @@ export interface PairingLookup {
   require_presence: boolean;
   /** Device types this server refuses to pair (multi-app-pairing-plan.md §4.6). Older servers omit it. */
   blocked_device_types?: string[];
+  /** The account's paired computer for this app (one-computer-per-account-plan.md §4.1). Older servers omit it. */
+  agent_device?: AccountDevice | null;
+  /** Where the account's signing devices are managed on the web. Older servers omit it. */
+  devices_url?: string;
   expires_at: string;
+}
+
+/** The computer an account is already paired with. Its hash only tells whether it's this computer. */
+export interface AccountDevice {
+  uuid: string;
+  label: string;
+  device_type?: string;
+  hardware_id_hash?: string | null;
 }
 
 export interface PairingClaim {
