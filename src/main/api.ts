@@ -109,6 +109,12 @@ export interface AgentJob {
   document: { title: string };
   signer: { name: string };
   expires_at: string;
+  /** The hub app that asked for this job. Standalone servers omit it. */
+  requesting_app?: { name: string };
+  /** Purpose `login` only: what the browser that's signing in shows. */
+  login?: { match_code: string; browser: string; ip: string };
+  /** Purpose `transfer` only: whose signature moves, and to which computer. */
+  transfer?: { name: string; device: string };
 }
 
 export interface OtherDevice {
@@ -202,6 +208,14 @@ export class AgentApi {
   /** Consumes the one-time link token and binds the job to this device. */
   claimJob(creds: Credentials, jobId: string, linkToken: string): Promise<AgentJob> {
     return this.request('POST', `${BASE}/jobs/${encodeURIComponent(jobId)}/claim`, { link_token: linkToken }, creds);
+  }
+
+  /**
+   * Claims a usernameless sign-in (kukuxsign://login/…). The server answers
+   * with a `login` job, finished through completeJob / rejectJob.
+   */
+  claimLogin(creds: Credentials, challengeId: string, linkToken: string): Promise<AgentJob> {
+    return this.request('POST', `${BASE}/logins/${encodeURIComponent(challengeId)}/claim`, { link_token: linkToken }, creds);
   }
 
   completeJob(creds: Credentials, jobId: string, proof: string): Promise<{ status: string }> {
