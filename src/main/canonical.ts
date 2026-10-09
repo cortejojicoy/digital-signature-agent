@@ -5,7 +5,7 @@
 //   v1|<purpose>|<nonce_b64url>|<user_id>|<payload_hash_hex>
 import { createHash } from 'node:crypto';
 
-export type Purpose = 'register_agent' | 'rebind_agent' | 'sign_receipt' | 'request';
+export type Purpose = 'register_agent' | 'rebind_agent' | 'sign_receipt' | 'login' | 'transfer' | 'request';
 
 const PURPOSE = /^[a-z_]{1,64}$/;
 const NONCE = /^[A-Za-z0-9_-]{1,128}$/;
