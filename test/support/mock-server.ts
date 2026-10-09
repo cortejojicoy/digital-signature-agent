@@ -7,7 +7,8 @@
 // package must make is here (proof verification, single-use link tokens,
 // request-proof replay and staleness, min_version, device binding, one
 // device per computer and app, one computer per account, blocked device
-// types).
+// types). It also plays the hub: usernameless sign-in (login links),
+// transfer jobs and requesting_app.
 //
 // Self-contained (node: imports only) so Node can run it directly with type
 // stripping.
@@ -76,7 +77,7 @@ export interface Job {
   uuid: string;
   userId: string;
   deviceUuid: string | null;
-  purpose: 'sign_receipt';
+  purpose: 'sign_receipt' | 'login' | 'transfer';
   title: string;
   payloadHash: string;
   nonce: string;
@@ -84,6 +85,38 @@ export interface Job {
   status: 'pending' | 'claimed' | 'completed' | 'rejected' | 'expired';
   result: Record<string, unknown> | null;
   expiresAt: number;
+  requestingApp?: string;
+  login?: { match_code: string; browser: string; ip: string };
+  transfer?: { name: string; device: string };
+}
+
+export interface JobOptions {
+  purpose?: 'sign_receipt' | 'transfer';
+  /** The hub app that asked (hub only). */
+  requestingApp?: string;
+  /** Purpose `transfer`: whose signature moves, and to which computer. */
+  transfer?: { name: string; device: string };
+}
+
+/** A usernameless sign-in: no user until a paired device claims it. */
+interface LoginChallenge {
+  uuid: string;
+  linkTokenHash: string;
+  matchCode: string;
+  browser: string;
+  ip: string;
+  status: 'pending' | 'claimed' | 'expired';
+  jobUuid: string | null;
+  expiresAt: number;
+  /** Tests only: a misbehaving server that hands out another user's job. */
+  forceUserId?: string;
+}
+
+export interface LoginOptions {
+  matchCode?: string;
+  browser?: string;
+  ip?: string;
+  forceUserId?: string;
 }
 
 const sha256 = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
@@ -159,6 +192,7 @@ export class MockSigningServer {
   readonly tokens = new Map<string, string>(); // sha256(token) → device uuid
   readonly jobs = new Map<string, Job>();
   readonly presence = new Map<string, PresenceCheck>();
+  readonly logins = new Map<string, LoginChallenge>();
   readonly seenRequestNonces = new Set<string>();
   private readonly http = createServer((req, res) => void this.route(req, res));
   private readonly now: () => number;
@@ -300,13 +334,18 @@ export class MockSigningServer {
     return [...this.devices.values()].find((d) => !d.revoked && d.hardwareIdHash === hardwareIdHash);
   }
 
-  createJob(title: string, documentHash: string, userId = this.users[0].id): { uuid: string; linkToken: string; link: string } {
+  createJob(
+    title: string,
+    documentHash: string,
+    userId = this.users[0].id,
+    options: JobOptions = {},
+  ): { uuid: string; linkToken: string; link: string } {
     const linkToken = b64url(32);
     const job: Job = {
       uuid: randomUUID(),
       userId,
       deviceUuid: null,
-      purpose: 'sign_receipt',
+      purpose: options.purpose ?? 'sign_receipt',
       title,
       payloadHash: documentHash,
       nonce: b64url(32),
@@ -314,10 +353,38 @@ export class MockSigningServer {
       status: 'pending',
       result: null,
       expiresAt: this.now() + 300_000,
+      requestingApp: options.requestingApp,
+      transfer: options.transfer,
     };
     this.jobs.set(job.uuid, job);
     const link = `kukuxsign://job/${job.uuid}?t=${linkToken}&s=${this.serverId}`;
     return { uuid: job.uuid, linkToken, link };
+  }
+
+  /** The hub's sign-in page: shows a match code and opens a login link. Nobody is named. */
+  createLogin(options: LoginOptions = {}): { uuid: string; link: string; matchCode: string } {
+    const linkToken = b64url(32);
+    const digits = () => String(randomBytes(1)[0] % 100).padStart(2, '0');
+    const challenge: LoginChallenge = {
+      uuid: randomUUID(),
+      linkTokenHash: sha256(linkToken),
+      matchCode: options.matchCode ?? `${digits()}-${digits()}`,
+      browser: options.browser ?? 'Chrome on macOS',
+      ip: options.ip ?? '10.1.2.3',
+      status: 'pending',
+      jobUuid: null,
+      expiresAt: this.now() + 120_000,
+      forceUserId: options.forceUserId,
+    };
+    this.logins.set(challenge.uuid, challenge);
+    const link = `kukuxsign://login/${challenge.uuid}?t=${linkToken}&s=${this.serverId}`;
+    return { uuid: challenge.uuid, link, matchCode: challenge.matchCode };
+  }
+
+  /** The `login` job a claimed sign-in became, if any. */
+  loginJob(challengeId: string): Job | undefined {
+    const jobUuid = this.logins.get(challengeId)?.jobUuid;
+    return jobUuid ? this.jobs.get(jobUuid) : undefined;
   }
 
   /** What the web page does before it lets someone sign: ask whether the paired computer is here. */
@@ -352,9 +419,18 @@ export class MockSigningServer {
         return send(res, 200, { device: this.confirmPairing(m[1]) });
       }
       if (method === 'POST' && path === '/__dev/jobs') {
-        return send(res, 200, this.createJob(json.title ?? 'Accomplishment Report – Sept', json.document_hash ?? sha256(b64url(16))));
+        return send(
+          res,
+          200,
+          this.createJob(json.title ?? 'Accomplishment Report – Sept', json.document_hash ?? sha256(b64url(16)), json.user_id, {
+            purpose: json.purpose,
+            requestingApp: json.requesting_app,
+            transfer: json.transfer,
+          }),
+        );
       }
       if (method === 'GET' && (m = /^\/__dev\/jobs\/([^/]+)$/.exec(path))) return send(res, 200, this.jobs.get(m[1]) ?? null);
+      if (method === 'POST' && path === '/__dev/logins') return send(res, 200, this.createLogin());
 
       if (method === 'POST' && path === '/signature/agent/pairings/lookup') return send(res, 200, this.lookup(json));
       if (method === 'POST' && (m = /^\/signature\/agent\/pairings\/([^/]+)\/claim$/.exec(path))) {
@@ -382,6 +458,9 @@ export class MockSigningServer {
       }
       if (method === 'POST' && (m = /^\/signature\/agent\/jobs\/([^/]+)\/claim$/.exec(path))) {
         return send(res, 200, this.claimJob(device, m[1], json));
+      }
+      if (method === 'POST' && (m = /^\/signature\/agent\/logins\/([^/]+)\/claim$/.exec(path))) {
+        return send(res, 200, this.claimLogin(device, m[1], json));
       }
       if (method === 'POST' && (m = /^\/signature\/agent\/jobs\/([^/]+)\/complete$/.exec(path))) {
         return send(res, 200, this.completeJob(device, m[1], json));
@@ -519,7 +598,44 @@ export class MockSigningServer {
     job.status = 'claimed';
     job.deviceUuid = device.uuid;
     job.linkTokenHash = ''; // single use
-    const user = this.users.find((u) => u.id === job.userId)!;
+    return this.jobPayload(job);
+  }
+
+  /**
+   * The device that claims a sign-in decides who signs in: the challenge
+   * becomes a `login` job for that device's user, finished like any job.
+   */
+  private claimLogin(device: Device, uuid: string, json: { link_token?: string }) {
+    const challenge = this.logins.get(uuid);
+    if (!challenge) throw new HttpError(404, 'login_not_found', 'Sign-in not found.');
+    if (challenge.expiresAt < this.now()) challenge.status = 'expired';
+    if (challenge.status !== 'pending') throw new HttpError(409, 'login_unavailable', `Sign-in is ${challenge.status}.`);
+    if (sha256(String(json.link_token ?? '')) !== challenge.linkTokenHash) throw new HttpError(403, 'invalid_link_token', 'Invalid link.');
+    challenge.linkTokenHash = ''; // single use
+    challenge.status = 'claimed';
+    const job: Job = {
+      uuid: randomUUID(),
+      userId: challenge.forceUserId ?? device.userId,
+      deviceUuid: device.uuid,
+      purpose: 'login',
+      title: `Sign in to ${this.serverName}`,
+      // Binds the proof to this challenge.
+      payloadHash: sha256(`login|${challenge.uuid}`),
+      nonce: b64url(32),
+      linkTokenHash: '',
+      status: 'claimed',
+      result: null,
+      expiresAt: challenge.expiresAt,
+      login: { match_code: challenge.matchCode, browser: challenge.browser, ip: challenge.ip },
+    };
+    this.jobs.set(job.uuid, job);
+    challenge.jobUuid = job.uuid;
+    return this.jobPayload(job);
+  }
+
+  /** What the agent receives for a claimed job. The hub-only blocks appear only when set. */
+  private jobPayload(job: Job) {
+    const user = this.users.find((u) => u.id === job.userId);
     return {
       uuid: job.uuid,
       purpose: job.purpose,
@@ -528,8 +644,11 @@ export class MockSigningServer {
       user_id: job.userId,
       payload_hash: job.payloadHash,
       document: { title: job.title },
-      signer: { name: user.name },
+      signer: { name: user?.name ?? '' },
       expires_at: new Date(job.expiresAt).toISOString(),
+      ...(job.requestingApp ? { requesting_app: { name: job.requestingApp } } : {}),
+      ...(job.login ? { login: job.login } : {}),
+      ...(job.transfer ? { transfer: job.transfer } : {}),
     };
   }
 
@@ -622,4 +741,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log(`\nThen confirm on the "web":  curl -X POST ${origin}/__dev/pairings/${uuid}/confirm`);
   console.log(`Create a job:               curl -X POST ${origin}/__dev/jobs -d '{"title":"Accomplishment Report – Sept"}'`);
   console.log('                            then: open "<link from the response>"');
+  console.log(`Hub-style jobs:             add "requesting_app":"performance", or "purpose":"transfer","transfer":{"name":"Juan dela Cruz","device":"MacBook Air"}`);
+  console.log(`Sign in (login link):       curl -X POST ${origin}/__dev/logins`);
 }

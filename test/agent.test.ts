@@ -25,6 +25,7 @@ interface Harness {
   agent: Agent;
   confirms: ConfirmRequest[];
   approve: boolean;
+  serversChanged: number;
   pairNow(): Promise<void>;
 }
 
@@ -44,6 +45,7 @@ async function setup(opts: { server?: MockServerOptions; keystore?: MemoryKeySto
     store,
     confirms: [],
     approve: true,
+    serversChanged: 0,
     agent: null as unknown as Agent,
     async pairNow() {
       const { uuid, userCode } = server.startPairing();
@@ -64,6 +66,7 @@ async function setup(opts: { server?: MockServerOptions; keystore?: MemoryKeySto
       h.confirms.push(request);
       return h.approve;
     },
+    onServersChanged: () => h.serversChanged++,
   });
   harness = h;
   return h;
@@ -284,6 +287,166 @@ describe('presence checks', () => {
 
     expect(await h.agent.handleLink(link.replace('s=test-server', 's=other-server'))).toBeNull();
     expect(h.server.presence.get(uuid)!.status).toBe('pending');
+  });
+});
+
+// ── Hub (signature-hub.md Part B) ──
+
+describe('hub sign-in (login links)', () => {
+  it('shows the match code, signs `login` with the identity key, and completes the job', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const { uuid, link } = h.server.createLogin({ matchCode: '47-12' });
+
+    const outcome = await h.agent.handleLink(link);
+    const job = h.server.loginJob(uuid)!;
+    expect(outcome).toEqual({ result: 'completed', jobId: job.uuid });
+    expect(h.confirms[0].job).toMatchObject({
+      purpose: 'login',
+      document: { title: 'Sign in to Test Signing App' },
+      login: { match_code: '47-12', browser: 'Chrome on macOS', ip: '10.1.2.3' },
+    });
+    expect(h.keystore.prompts.at(-1)).toBe('sign in to Test Signing App (code 47-12)');
+    // The server verified the proof over v1|login|… with the identity key.
+    expect(job).toMatchObject({ status: 'completed', result: { device_uuid: h.store.list()[0].deviceUuid } });
+  });
+
+  it('rejects the job when the user denies', async () => {
+    const h = await setup();
+    await h.pairNow();
+    h.approve = false;
+    const { uuid, link } = h.server.createLogin();
+
+    const job = () => h.server.loginJob(uuid)!;
+    expect(await h.agent.handleLink(link)).toEqual({ result: 'rejected', jobId: job().uuid, reason: 'declined' });
+    expect(job()).toMatchObject({ status: 'rejected', result: { reason: 'declined' } });
+  });
+
+  it('refuses a sign-in for a different user', async () => {
+    const h = await setup({ server: TWO_USERS });
+    await h.pairNow();
+    const promptsBefore = h.keystore.prompts.length;
+    const { link } = h.server.createLogin({ forceUserId: '7' });
+
+    expect(await h.agent.handleLink(link)).toMatchObject({ result: 'failed', error: expect.stringMatching(/different user/) });
+    expect(h.confirms).toHaveLength(0);
+    expect(h.keystore.prompts).toHaveLength(promptsBefore);
+  });
+
+  it.each(['4712', '47-123', 'ab-cd', ''])('refuses a bad match code (%j)', async (matchCode) => {
+    const h = await setup();
+    await h.pairNow();
+    const { uuid, link } = h.server.createLogin({ matchCode });
+
+    expect(await h.agent.handleLink(link)).toMatchObject({ result: 'failed', error: expect.stringMatching(/match code/) });
+    expect(h.confirms).toHaveLength(0);
+    expect(h.server.loginJob(uuid)).toMatchObject({ status: 'rejected', result: { reason: 'invalid_job' } });
+  });
+
+  it('surfaces claim errors as failures', async () => {
+    const h = await setup();
+    await h.pairNow();
+    h.approve = false;
+    const { uuid, link } = h.server.createLogin();
+    const otherToken = 'A'.repeat(43);
+
+    expect(await h.agent.handleLink(link.replace(/t=[^&]+/, `t=${otherToken}`))).toMatchObject({
+      result: 'failed',
+      jobId: uuid,
+      code: 'invalid_link_token',
+    });
+    expect(await h.agent.handleLink(link.replace(uuid, '0b7a4f5e-1c2d-4e3f-8a9b-0c1d2e3f4a5b'))).toMatchObject({
+      result: 'failed',
+      code: 'login_not_found',
+    });
+    await h.agent.handleLink(link);
+    expect(await h.agent.handleLink(link)).toMatchObject({ result: 'failed', code: 'login_unavailable' });
+    expect(h.confirms).toHaveLength(1);
+  });
+
+  it("says this computer isn't paired with the app, without contacting it", async () => {
+    const h = await setup();
+    await h.pairNow();
+    const { uuid, link } = h.server.createLogin();
+
+    expect(await h.agent.handleLink(link.replace('s=test-server', 's=hub'))).toEqual({
+      result: 'failed',
+      jobId: uuid,
+      code: 'not_paired',
+      error: expect.stringMatching(/isn't paired .* Pair this computer/),
+    });
+    expect(h.server.logins.get(uuid)!.status).toBe('pending');
+  });
+});
+
+describe('hub jobs', () => {
+  it('shows which app asked, and stays as before when no app is named', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const asked = h.server.createJob('Noted by, IPCR Q3', DOC_HASH, '42', { requestingApp: 'performance' });
+    const plain = h.server.createJob('Leave form', DOC_HASH);
+
+    expect(await h.agent.handleLink(asked.link)).toMatchObject({ result: 'completed' });
+    expect(await h.agent.handleLink(plain.link)).toMatchObject({ result: 'completed' });
+    expect(h.confirms[0].job.requesting_app).toEqual({ name: 'performance' });
+    expect(h.confirms[1].job).not.toHaveProperty('requesting_app');
+  });
+
+  it('refuses a job naming an invalid requesting app', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const { uuid, link } = h.server.createJob('Leave form', DOC_HASH, '42', { requestingApp: 'x'.repeat(301) });
+
+    expect(await h.agent.handleLink(link)).toMatchObject({ result: 'failed', error: expect.stringMatching(/requesting app/) });
+    expect(h.confirms).toHaveLength(0);
+    expect(h.server.jobs.get(uuid)!.result).toEqual({ reason: 'invalid_job' });
+  });
+
+  it('confirms and completes a transfer to a new computer', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const transfer = { name: 'Juan Dela Cruz', device: 'MacBook Air' };
+    const { uuid, link } = h.server.createJob('Move your signature to a new computer', DOC_HASH, '42', { purpose: 'transfer', transfer });
+
+    expect(await h.agent.handleLink(link)).toEqual({ result: 'completed', jobId: uuid });
+    expect(h.confirms[0].job).toMatchObject({ purpose: 'transfer', transfer });
+    expect(h.keystore.prompts.at(-1)).toBe("move Juan Dela Cruz's signature to MacBook Air");
+    expect(h.server.jobs.get(uuid)!.status).toBe('completed');
+  });
+
+  it('refuses a transfer that does not say whose signature or where to', async () => {
+    const h = await setup();
+    await h.pairNow();
+    const { link } = h.server.createJob('Move your signature', DOC_HASH, '42', { purpose: 'transfer' });
+
+    expect(await h.agent.handleLink(link)).toMatchObject({ result: 'failed', error: expect.stringMatching(/transfer/) });
+    expect(h.confirms).toHaveLength(0);
+  });
+});
+
+describe('account name', () => {
+  it('picks up the name a hub account gets after pairing, and stores it only when it changed', async () => {
+    const h = await setup({ server: { users: [{ id: '42', name: '' }] } });
+    await h.pairNow();
+    expect(h.store.list()[0].userName).toBe('');
+    const before = h.serversChanged;
+
+    await h.agent.refreshOtherDevices(true);
+    expect(h.serversChanged).toBe(before);
+
+    h.server.users[0].name = 'Juan Dela Cruz';
+    await h.agent.refreshOtherDevices(true);
+    expect(h.store.list()[0].userName).toBe('Juan Dela Cruz');
+    expect(h.agent.servers()[0].userName).toBe('Juan Dela Cruz');
+    expect(h.serversChanged).toBe(before + 1);
+
+    await h.agent.refreshOtherDevices(true);
+    expect(h.serversChanged).toBe(before + 1);
+
+    // A blank name from the server never erases the one we have.
+    h.server.users[0].name = '  ';
+    await h.agent.refreshOtherDevices(true);
+    expect(h.store.list()[0].userName).toBe('Juan Dela Cruz');
   });
 });
 
