@@ -36,6 +36,13 @@ function useArmedAfterFocus(): boolean {
 
 const PURPOSES: Record<string, string> = {
   sign_receipt: 'Sign a document',
+  transfer: 'Move your signature',
+};
+
+// What the finished states say, per purpose.
+const WORDS = {
+  sign: { waiting: 'Signing', done: 'Signed', declined: 'Declined', nothing: 'Nothing was signed.', failed: 'Signing failed' },
+  login: { waiting: 'Signing in to', done: 'Signed in', declined: 'Denied', nothing: 'Nobody was signed in.', failed: 'Sign-in failed' },
 };
 
 // Confirm window for each job (desktop-agent-plan.md §7.4). This is UX: the
@@ -65,6 +72,7 @@ export function ConfirmView({ jobId }: { jobId: string }) {
   }
 
   const platform = currentPlatform();
+  const words = job.login ? WORDS.login : WORDS.sign;
 
   if (state) {
     return (
@@ -74,29 +82,89 @@ export function ConfirmView({ jobId }: { jobId: string }) {
             <>
               <div className="spinner" aria-hidden="true" />
               <h1>Approve with {presenceLabel(platform, job.userPresence)}</h1>
-              <p className="muted">Signing “{job.documentTitle}”</p>
+              <p className="muted">
+                {words.waiting} “{job.login ? job.serverName : job.documentTitle}”
+              </p>
             </>
           )}
           {state.state === 'completed' && (
             <>
               <div className="big-check" aria-hidden="true">✓</div>
-              <h1>Signed</h1>
+              <h1>{words.done}</h1>
               <p className="muted">Return to your browser.</p>
             </>
           )}
           {state.state === 'rejected' && (
             <>
-              <h1>Declined</h1>
-              <p className="muted">Nothing was signed.</p>
+              <h1>{words.declined}</h1>
+              <p className="muted">{words.nothing}</p>
             </>
           )}
           {state.state === 'failed' && (
             <>
-              <h1>Signing failed</h1>
+              <h1>{words.failed}</h1>
               <p className="error">{state.error}</p>
             </>
           )}
         </section>
+      </main>
+    );
+  }
+
+  const decline = () => void window.agent.rejectJob(jobId);
+  // A pointer click only (detail > 0): Enter / Space typed into a
+  // window that just took focus must never approve.
+  const approve = (e: { detail: number }) => {
+    if (e.detail > 0) void window.agent.approveJob(jobId);
+  };
+
+  if (job.login) {
+    return (
+      <main className="page">
+        <header className="page-header">
+          <p className="eyebrow">Sign-in request from</p>
+          <h1>{job.serverName}</h1>
+          <p className="mono muted">{job.origin}</p>
+        </header>
+
+        <section className="card center">
+          <h1>
+            Does your browser show <span className="match-code">{job.login.matchCode}</span>?
+          </h1>
+          <p className="lead muted">{job.documentTitle}</p>
+        </section>
+
+        <section className="card">
+          <dl className="facts">
+            <dt>Browser</dt>
+            <dd>{job.login.browser || 'Unknown'}</dd>
+            <dt>Address</dt>
+            <dd className="mono">{job.login.ip || 'Unknown'}</dd>
+            {job.signerName && (
+              <>
+                <dt>Signing in as</dt>
+                <dd>{job.signerName}</dd>
+              </>
+            )}
+            <dt>Key</dt>
+            <dd>
+              {deviceTypeLabel(job.deviceType)} · {protectionLabel(job.protection)} · {presenceLabel(platform, job.userPresence)}
+            </dd>
+          </dl>
+        </section>
+
+        <p className="muted small">Approve only if the code matches and you just chose Sign in in your browser.</p>
+
+        <div className="actions">
+          <button type="button" className="button button-quiet button-icon" disabled={!armed} onClick={decline}>
+            <Icon name="x" />
+            Deny
+          </button>
+          <button type="button" className="button button-primary button-icon" disabled={!armed} onClick={approve}>
+            <Icon name="check" />
+            Approve
+          </button>
+        </div>
       </main>
     );
   }
@@ -108,6 +176,17 @@ export function ConfirmView({ jobId }: { jobId: string }) {
         <h1>{job.serverName}</h1>
         <p className="mono muted">{job.origin}</p>
       </header>
+
+      {job.transfer && (
+        <p className="lead">
+          Move <strong>{job.transfer.name}</strong>’s signature to a new computer ({job.transfer.device})?
+        </p>
+      )}
+      {job.requestingApp && (
+        <p className="lead">
+          <strong>{job.requestingApp}</strong> asks: {job.documentTitle}
+        </p>
+      )}
 
       <section className="card">
         <dl className="facts">
@@ -127,20 +206,11 @@ export function ConfirmView({ jobId }: { jobId: string }) {
       <p className="muted small">Approve only if you just started this in your browser.</p>
 
       <div className="actions">
-        <button type="button" className="button button-quiet button-icon" disabled={!armed} onClick={() => void window.agent.rejectJob(jobId)}>
+        <button type="button" className="button button-quiet button-icon" disabled={!armed} onClick={decline}>
           <Icon name="x" />
           Decline
         </button>
-        <button
-          type="button"
-          className="button button-primary button-icon"
-          disabled={!armed}
-          onClick={(e) => {
-            // A pointer click only (detail > 0): Enter / Space typed into a
-            // window that just took focus must never approve.
-            if (e.detail > 0) void window.agent.approveJob(jobId);
-          }}
-        >
+        <button type="button" className="button button-primary button-icon" disabled={!armed} onClick={approve}>
           <Icon name="check" />
           Approve
         </button>
