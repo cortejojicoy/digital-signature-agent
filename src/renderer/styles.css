@@ -123,6 +123,20 @@ h2 {
   margin: 0;
 }
 
+/* The sign-in match code: big enough to compare with the browser at a glance. */
+.match-code {
+  display: block;
+  margin-top: 8px;
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+}
+
+.lead {
+  margin: 0;
+}
+
 .document-title {
   font-weight: 600;
   -webkit-user-select: text;
