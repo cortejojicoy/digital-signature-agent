@@ -105,7 +105,10 @@ npm run dev                 # builds and starts Electron
 
 Then pair with the printed origin and code, and confirm with the printed
 `curl … /confirm`. Create a job with `curl -X POST <origin>/__dev/jobs` and
-open the returned `kukuxsign://job/…` link.
+open the returned `kukuxsign://job/…` link. To try the hub flows, add
+`"requesting_app":"performance"` or `"purpose":"transfer","transfer":{…}` to
+the job, or start a sign-in with `curl -X POST <origin>/__dev/logins` and open
+its `kukuxsign://login/…` link.
 
 ### Testing against a local project
 
