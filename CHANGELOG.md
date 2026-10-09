@@ -8,6 +8,11 @@ When tagging a release, rename `Unreleased` to the version, e.g.
 
 ## Unreleased
 
+- Sign in to the UPLB Signature Hub from this computer: check the code your browser shows, then approve with Touch ID or Windows Hello
+- The confirm window says which app asked, e.g. "performance asks: IPCR Q3"
+- Approve moving your signature to a new computer
+- Your name appears in the agent once you tell the hub who you are
+- Pairing now points to **Pair this computer** on the website
 - Answers an app's "is this your paired computer?" check silently, so apps that require it can let you sign from this computer
 - Pair one computer with several apps, one signature per app
 - Re-pairing the same account now updates your device instead of adding a new one

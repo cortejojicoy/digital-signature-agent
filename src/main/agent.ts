@@ -153,15 +153,25 @@ export class Agent {
   /**
    * Asks each paired app for the account's other devices (§7.4). Best
    * effort and throttled: the status window calls it whenever it opens.
-   * Resolves true when something changed.
+   * Resolves true when the other devices changed.
+   *
+   * Also picks up the account's name: a hub account has none when it pairs,
+   * and gets one once the person identifies themselves. A new name is
+   * stored and reported through onServersChanged.
    */
   async refreshOtherDevices(force = false): Promise<boolean> {
     if (!force && Date.now() - this.otherDevicesAt < OTHER_DEVICES_TTL_MS) return false;
     this.otherDevicesAt = Date.now();
     let changed = false;
+    let renamed = false;
     for (const server of this.options.store.list()) {
       try {
         const status = await this.apiFor(server.origin).status(this.credentialsFor(server));
+        const name = status.user?.name;
+        if (typeof name === 'string' && name.trim() !== '' && name !== server.userName) {
+          await this.options.store.update({ ...server, userName: name });
+          renamed = true;
+        }
         const others = (status.other_devices ?? []).map((d) => ({
           label: String(d.label ?? ''),
           deviceType: isDeviceType(d.device_type) ? d.device_type : null,
@@ -175,6 +185,7 @@ export class Agent {
         }
       }
     }
+    if (renamed) this.options.onServersChanged?.();
     return changed;
   }
 
@@ -222,7 +233,7 @@ export class Agent {
       await this.reportPresence(link);
       return null;
     }
-    const outcome = await this.jobs.handle(link);
+    const outcome = link.kind === 'login' ? await this.jobs.handleLogin(link) : await this.jobs.handle(link);
     this.options.onJobOutcome?.(outcome);
     return outcome;
   }

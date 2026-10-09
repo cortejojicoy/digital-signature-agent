@@ -76,7 +76,8 @@ export function StatusView({ onPair }: { onPair: () => void }) {
         )}
         {status.servers.length === 0 ? (
           <p className="muted">
-            None yet. In the web app, open <strong>My signing devices → Pair desktop agent</strong>.
+            None yet. Open the website (<span className="mono">signature.uplb.edu.ph</span> for UPLB) and choose{' '}
+            <strong>Pair this computer</strong>.
           </p>
         ) : (
           <ul className="server-list">

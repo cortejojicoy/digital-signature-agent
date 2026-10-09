@@ -27,13 +27,25 @@ export interface PresenceLink {
   serverId: string;
 }
 
+/**
+ * Usernameless sign-in: the browser shows a match code and opens this link.
+ * Same shape and trust as a job link; the paired device, not the page,
+ * decides who signs in.
+ */
+export interface LoginLink {
+  kind: 'login';
+  challengeId: string;
+  token: string;
+  serverId: string;
+}
+
 export interface PairLink {
   kind: 'pair';
   origin: string;
   code: string;
 }
 
-export type AgentLink = JobLink | PresenceLink | PairLink;
+export type AgentLink = JobLink | PresenceLink | LoginLink | PairLink;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/; // 32 random bytes, base64url, no padding
@@ -82,6 +94,15 @@ export function parseLink(raw: string, policy: OriginPolicy = {}): AgentLink | n
     return { kind: 'presence', checkId, token, serverId };
   }
 
+  if (segments[0] === 'login' && segments.length === 2) {
+    if (!onlyParams(params, ['t', 's'])) return null;
+    const challengeId = segments[1].toLowerCase();
+    const token = params.get('t') ?? '';
+    const serverId = params.get('s') ?? '';
+    if (!UUID.test(challengeId) || !TOKEN.test(token) || !SERVER_ID.test(serverId)) return null;
+    return { kind: 'login', challengeId, token, serverId };
+  }
+
   if (segments[0] === 'pair' && segments.length === 1) {
     if (!onlyParams(params, ['o', 'c'])) return null;
     const origin = normalizeOrigin(params.get('o') ?? '', policy);
@@ -91,6 +112,11 @@ export function parseLink(raw: string, policy: OriginPolicy = {}): AgentLink | n
   }
 
   return null;
+}
+
+/** A lowercase UUID, as in links. For ids that come from a server, not a link. */
+export function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID.test(value);
 }
 
 function onlyParams(params: URLSearchParams, allowed: string[]): boolean {

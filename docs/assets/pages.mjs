@@ -450,6 +450,8 @@ ${table(
     ['<code>register_agent</code>', 'Identity', '<code>sha256(identity_spki ‖ session_spki)</code>'],
     ['<code>rebind_agent</code>', 'Existing session', '<code>sha256(identity_spki ‖ session_spki)</code> of the new keys'],
     ['<code>sign_receipt</code>', 'Identity', 'The document hash'],
+    ['<code>login</code>', 'Identity', 'The sign-in job’s hash (hub)'],
+    ['<code>transfer</code>', 'Identity', 'The transfer job’s hash (hub)'],
     ['<code>request</code>', 'Session', '<code>sha256("METHOD|path|body|timestamp")</code>'],
   ],
 )}
@@ -499,6 +501,18 @@ ${steps([
   '<strong>Agent</strong> sends the proof → <a href="#/api/http/post-jobs-complete"><code>POST /jobs/{id}/complete</code></a>',
 ])}
 ${urlBar('kukuxsign://job/0b7a4f5e-1c2d-4e3f-8a9b-0c1d2e3f4a5b?t=fIb2Bzv4gKtSWoDpD9canXJryrxB47J3uR9y4Xkqz8w&s=dict', 'Job id, one-time token, and the paired server id. Nothing else is accepted.')}
+<p>A hub job may also carry <code>"requesting_app": {"name": "performance"}</code>, shown as “performance asks: …”.
+A <code>transfer</code> job carries <code>"transfer": {"name", "device"}</code> and asks “Move Juan Dela Cruz’s
+signature to a new computer (MacBook Air)?”. Standalone servers send neither.</p>
+
+<h2 id="hub-sign-in">Signing in to the hub</h2>
+${steps([
+  '<strong>Browser</strong> shows a match code and opens the link below.',
+  '<strong>Agent</strong> claims the sign-in → <a href="#/api/http/post-logins-claim"><code>POST /logins/{id}/claim</code></a>, and gets a <code>login</code> job.',
+  '<strong>User</strong> checks the code and approves; the identity key signs <code>login</code>.',
+  '<strong>Agent</strong> sends the proof → <a href="#/api/http/post-jobs-complete"><code>POST /jobs/{job}/complete</code></a>',
+])}
+${urlBar('kukuxsign://login/0b7a4f5e-1c2d-4e3f-8a9b-0c1d2e3f4a5b?t=fIb2Bzv4gKtSWoDpD9canXJryrxB47J3uR9y4Xkqz8w&s=hub', 'Challenge id, one-time token, and the hub’s server id. The page never names the user.')}
 
 <h2 id="request-auth">Authenticated requests</h2>
 <p>After pairing, every call carries a bearer token and a session-key signature:</p>

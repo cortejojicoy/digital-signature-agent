@@ -52,6 +52,30 @@ describe('parseLink', () => {
     expect(parseLink(raw)).toBeNull();
   });
 
+  it('accepts the login link shape', () => {
+    expect(parseLink(`kukuxsign://login/${UUID.toUpperCase()}?t=${TOKEN}&s=hub`)).toEqual({
+      kind: 'login',
+      challengeId: UUID,
+      token: TOKEN,
+      serverId: 'hub',
+    });
+  });
+
+  it.each([
+    ['bad uuid', `kukuxsign://login/nope?t=${TOKEN}&s=a`],
+    ['short token', `kukuxsign://login/${UUID}?t=abc&s=a`],
+    ['missing token', `kukuxsign://login/${UUID}?s=a`],
+    ['missing server', `kukuxsign://login/${UUID}?t=${TOKEN}`],
+    ['bad server id', `kukuxsign://login/${UUID}?t=${TOKEN}&s=a%2Fb`],
+    ['extra parameter', `kukuxsign://login/${UUID}?t=${TOKEN}&s=a&code=47-12`],
+    ['duplicate parameter', `kukuxsign://login/${UUID}?t=${TOKEN}&s=a&s=b`],
+    ['extra path segment', `kukuxsign://login/${UUID}/x?t=${TOKEN}&s=a`],
+    ['no challenge', `kukuxsign://login?t=${TOKEN}&s=a`],
+    ['fragment', `kukuxsign://login/${UUID}?t=${TOKEN}&s=a#x`],
+  ])('drops a login link with %s', (_name, raw) => {
+    expect(parseLink(raw)).toBeNull();
+  });
+
   it('accepts a pair link with an HTTPS origin', () => {
     expect(parseLink('kukuxsign://pair?o=https%3A%2F%2Fsign.example.gov.ph&c=k7qm2xpd')).toEqual({
       kind: 'pair',

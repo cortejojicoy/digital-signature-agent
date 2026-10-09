@@ -87,7 +87,7 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
             {paired.rebound ? 'Re-paired' : 'Paired'} with {paired.serverName}
           </h1>
           {paired.rebound && <p className="muted">Your existing device was updated with new keys.</p>}
-          <p className="muted">Choose “Sign with this computer” in the web app.</p>
+          <p className="muted">Go back to your browser to finish.</p>
           <IconButton icon="check" label="Done" variant="primary" tip="above" onClick={onDone} autoFocus />
         </section>
       </main>
@@ -99,8 +99,8 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
       <header className="page-header">
         <h1>Pair with an app</h1>
         <p className="muted">
-          Enter the address and code from <strong>My signing devices → Pair desktop agent</strong>, or paste the pairing
-          link.
+          Open the website (<span className="mono">signature.uplb.edu.ph</span> for UPLB) and choose{' '}
+          <strong>Pair this computer</strong>. Enter the address and code it shows, or paste the pairing link.
         </p>
       </header>
 

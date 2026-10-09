@@ -21,6 +21,10 @@ describe('canonical messages (shared vectors)', () => {
     expect(() => canonicalMessage(v.purpose, v.nonce, v.user_id, v.payload_hash)).toThrow();
   });
 
+  it('covers the hub purposes', () => {
+    expect(vectors.messages.map((v) => v.purpose)).toEqual(expect.arrayContaining(['login', 'transfer']));
+  });
+
   it('accepts numeric user ids', () => {
     expect(canonicalMessage('sign_receipt', 'abc', 42, 'a'.repeat(64))).toBe(`v1|sign_receipt|abc|42|${'a'.repeat(64)}`);
   });

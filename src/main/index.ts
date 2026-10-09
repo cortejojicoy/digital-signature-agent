@@ -222,7 +222,7 @@ function main(): void {
         maximizable: false,
         fullscreenable: false,
         alwaysOnTop: true,
-        title: 'Confirm signing',
+        title: request.job.purpose === 'login' ? 'Confirm sign-in' : 'Confirm signing',
         show: false,
         webPreferences: secureWebPreferences(),
       });
@@ -277,6 +277,10 @@ function main(): void {
       if (outcome.code === 'agent_outdated') {
         notify('Update required', 'This app needs a newer agent. Updating…');
         void checkForUpdates({ background: true });
+      } else if (outcome.code === 'not_paired') {
+        // A sign-in from an app this computer isn't paired with: offer pairing.
+        notify('Not paired', outcome.error);
+        showMainWindow();
       } else if (!confirms.has(jobId)) {
         notify('Signing failed', outcome.error);
       }
@@ -485,6 +489,13 @@ function main(): void {
         protection: server.protection,
         userPresence: server.userPresence,
         deviceType: server.deviceType ?? 'other',
+        requestingApp: job.requesting_app?.name,
+        // Only for their own purpose, so no other job can look like a sign-in.
+        login:
+          job.purpose === 'login' && job.login
+            ? { matchCode: job.login.match_code, browser: job.login.browser ?? '', ip: job.login.ip ?? '' }
+            : undefined,
+        transfer: job.purpose === 'transfer' && job.transfer ? { name: job.transfer.name, device: job.transfer.device } : undefined,
       };
     });
 

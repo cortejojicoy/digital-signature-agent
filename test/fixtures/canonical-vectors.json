@@ -28,6 +28,20 @@
       "user_id": "01HZX3Y8K2M4N6P8Q0R2S4T6V8",
       "payload_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "message": "v1|sign_receipt|_-_-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|01HZX3Y8K2M4N6P8Q0R2S4T6V8|ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "purpose": "login",
+      "nonce": "bG9naW4tbm9uY2UtMDEyMzQ1Njc4OWFiY2RlZjAxMjM",
+      "user_id": "42",
+      "payload_hash": "491f084542c31ba489ea9ba9c1c422e6fbd2234bad95c3c6cda37937042ae644",
+      "message": "v1|login|bG9naW4tbm9uY2UtMDEyMzQ1Njc4OWFiY2RlZjAxMjM|42|491f084542c31ba489ea9ba9c1c422e6fbd2234bad95c3c6cda37937042ae644"
+    },
+    {
+      "purpose": "transfer",
+      "nonce": "dHJhbnNmZXItbm9uY2UtMDEyMzQ1Njc4OWFiY2RlZjA",
+      "user_id": "01HZX3Y8K2M4N6P8Q0R2S4T6V8",
+      "payload_hash": "f80c24206ea92664aee113fd218099c697d9fcf4d51dda7951f863b3abf45e1c",
+      "message": "v1|transfer|dHJhbnNmZXItbm9uY2UtMDEyMzQ1Njc4OWFiY2RlZjA|01HZX3Y8K2M4N6P8Q0R2S4T6V8|f80c24206ea92664aee113fd218099c697d9fcf4d51dda7951f863b3abf45e1c"
     }
   ],
   "requests": [

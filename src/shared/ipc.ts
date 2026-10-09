@@ -111,6 +111,12 @@ export interface JobView {
   protection: ProtectionLevel;
   userPresence: boolean;
   deviceType: DeviceType;
+  /** The hub app that asked, shown as "<app> asks: <document>". */
+  requestingApp?: string;
+  /** Purpose `login`: the code the browser shows, and which browser it is. */
+  login?: { matchCode: string; browser: string; ip: string };
+  /** Purpose `transfer`: whose signature moves, and to which computer. */
+  transfer?: { name: string; device: string };
 }
 
 export type JobState =
