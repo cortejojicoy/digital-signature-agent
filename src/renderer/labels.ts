@@ -1,4 +1,4 @@
-import type { DeviceType, ProtectionLevel, StatusView } from '../shared/ipc';
+import type { DeviceType, KeySourceView, ProtectionLevel, StatusView } from '../shared/ipc';
 
 export function protectionLabel(p: ProtectionLevel): string {
   switch (p) {
@@ -9,6 +9,23 @@ export function protectionLabel(p: ProtectionLevel): string {
     default:
       return 'Software';
   }
+}
+
+/** The chip's name on this platform, or "Certificate" (pkcs12-key-storage-plan.md §7.5). */
+export function keyStorageLabel(platform: StatusView['platform'] | 'unknown', source: KeySourceView): string {
+  if (source === 'pkcs12') return 'Software certificate';
+  return platform === 'windows' ? 'TPM' : 'Secure Enclave';
+}
+
+/** "Certificate · Test UP 4" for certificate pairings, the protection otherwise. */
+export function pairingKeyLabel(s: { keySource: KeySourceView; certificateName?: string; protection: ProtectionLevel }): string {
+  if (s.keySource === 'pkcs12') return s.certificateName ? `Certificate · ${s.certificateName}` : 'Certificate';
+  return protectionLabel(s.protection);
+}
+
+export function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 export function presenceLabel(platform: StatusView['platform'] | 'unknown', userPresence: boolean): string {
