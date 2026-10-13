@@ -238,3 +238,109 @@ public func kse_open(
         return kFailed
     }
 }
+
+// ── Wrapping imported certificate keys (pkcs12-key-storage-plan.md §5.2) ──
+//
+// The Secure Enclave can't hold an RSA key or import any key, so a key from a
+// .p12 is sealed with the same ECIES scheme to a Secure Enclave key-agreement
+// key whose access control requires user presence. Unwrapping is therefore a
+// Secure Enclave operation that shows Touch ID / the password prompt, and the
+// sealed file is useless on any other Mac.
+
+private let wrapInfo = Data("kukuxsign pkcs12 key v1".utf8)
+
+private func wrappingKey(_ shared: SharedSecret) -> SymmetricKey {
+    return shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data(), sharedInfo: wrapInfo, outputByteCount: 32)
+}
+
+@_cdecl("kse_wrap_key_create")
+public func kse_wrap_key_create(
+    _ requirePresence: Bool,
+    _ biometryOnly: Bool,
+    _ blobOut: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>,
+    _ blobLen: UnsafeMutablePointer<Int>,
+    _ errBuf: UnsafeMutablePointer<CChar>?,
+    _ errSize: Int
+) -> Int32 {
+    guard SecureEnclave.isAvailable else {
+        writeError("this Mac has no Secure Enclave", errBuf, errSize)
+        return kUnsupported
+    }
+    var flags: SecAccessControlCreateFlags = [.privateKeyUsage]
+    if requirePresence { flags.insert(biometryOnly ? .biometryCurrentSet : .userPresence) }
+    var cfError: Unmanaged<CFError>?
+    guard let acl = SecAccessControlCreateWithFlags(
+        nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, flags, &cfError)
+    else {
+        writeError("SecAccessControlCreateWithFlags failed", errBuf, errSize)
+        return kFailed
+    }
+    do {
+        let key = try SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: acl)
+        copyOut(key.dataRepresentation, blobOut, blobLen)
+        return kOK
+    } catch {
+        writeError("\(error)", errBuf, errSize)
+        return status(for: error)
+    }
+}
+
+/// Seals `plain` to the wrapping key. Uses only its public key: no prompt.
+@_cdecl("kse_wrap")
+public func kse_wrap(
+    _ blob: UnsafePointer<UInt8>,
+    _ blobCount: Int,
+    _ plain: UnsafePointer<UInt8>,
+    _ plainCount: Int,
+    _ out: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>,
+    _ outLen: UnsafeMutablePointer<Int>,
+    _ errBuf: UnsafeMutablePointer<CChar>?,
+    _ errSize: Int
+) -> Int32 {
+    do {
+        let recipient = try SecureEnclave.P256.KeyAgreement.PrivateKey(
+            dataRepresentation: Data(bytes: blob, count: blobCount)).publicKey
+        let ephemeral = P256.KeyAgreement.PrivateKey()
+        let key = wrappingKey(try ephemeral.sharedSecretFromKeyAgreement(with: recipient))
+        let box = try AES.GCM.seal(Data(bytes: plain, count: plainCount), using: key)
+        guard let combined = box.combined else { throw CryptoKitError.incorrectParameterSize }
+        copyOut(ephemeral.publicKey.x963Representation + combined, out, outLen)
+        return kOK
+    } catch {
+        writeError("\(error)", errBuf, errSize)
+        return kFailed
+    }
+}
+
+/// Opens a wrapped key. Shows the Touch ID / password prompt with `reason`
+/// when the wrapping key requires presence. The caller wipes the output.
+@_cdecl("kse_unwrap")
+public func kse_unwrap(
+    _ blob: UnsafePointer<UInt8>,
+    _ blobCount: Int,
+    _ sealed: UnsafePointer<UInt8>,
+    _ sealedCount: Int,
+    _ reason: UnsafePointer<CChar>,
+    _ out: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>,
+    _ outLen: UnsafeMutablePointer<Int>,
+    _ errBuf: UnsafeMutablePointer<CChar>?,
+    _ errSize: Int
+) -> Int32 {
+    let context = LAContext()
+    context.localizedReason = String(cString: reason)
+    do {
+        let data = Data(bytes: sealed, count: sealedCount)
+        guard data.count > 65 else { throw CryptoKitError.incorrectParameterSize }
+        let ephemeral = try P256.KeyAgreement.PublicKey(x963Representation: data.prefix(65))
+        let own = try SecureEnclave.P256.KeyAgreement.PrivateKey(
+            dataRepresentation: Data(bytes: blob, count: blobCount), authenticationContext: context)
+        let key = wrappingKey(try own.sharedSecretFromKeyAgreement(with: ephemeral))
+        var plain = try AES.GCM.open(AES.GCM.SealedBox(combined: data.dropFirst(65)), using: key)
+        copyOut(plain, out, outLen)
+        plain.resetBytes(in: 0..<plain.count)
+        return kOK
+    } catch {
+        writeError("\(error)", errBuf, errSize)
+        return status(for: error)
+    }
+}

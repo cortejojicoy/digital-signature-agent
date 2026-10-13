@@ -27,6 +27,29 @@ Bytes derInteger(const uint8_t* data, size_t len) {
     return out;
 }
 
+void appendLength(Bytes& out, size_t len) {
+    if (len < 0x80) {
+        out.push_back(static_cast<uint8_t>(len));
+        return;
+    }
+    Bytes digits;
+    for (size_t n = len; n > 0; n >>= 8) digits.insert(digits.begin(), static_cast<uint8_t>(n & 0xff));
+    out.push_back(static_cast<uint8_t>(0x80 | digits.size()));
+    out.insert(out.end(), digits.begin(), digits.end());
+}
+
+Bytes tlv(uint8_t tag, const Bytes& body) {
+    Bytes out{tag};
+    appendLength(out, body.size());
+    out.insert(out.end(), body.begin(), body.end());
+    return out;
+}
+
+// SEQUENCE { OID rsaEncryption, NULL }
+const uint8_t kRsaAlgorithmId[] = {
+    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
+};
+
 }  // namespace
 
 const char* Error::codeName() const {
@@ -36,6 +59,9 @@ const char* Error::codeName() const {
         case ErrorCode::Cancelled: return "E_CANCELLED";
         case ErrorCode::Unsupported: return "E_UNSUPPORTED";
         case ErrorCode::Internal: return "E_INTERNAL";
+        case ErrorCode::BadPassword: return "E_BAD_PASSWORD";
+        case ErrorCode::BadFile: return "E_BAD_FILE";
+        case ErrorCode::KeyMismatch: return "E_KEY_MISMATCH";
     }
     return "E_INTERNAL";
 }
@@ -71,6 +97,41 @@ Bytes ecdsaRawToDer(const Bytes& rs) {
     der.push_back(static_cast<uint8_t>(body.size()));
     der.insert(der.end(), body.begin(), body.end());
     return der;
+}
+
+Bytes rsaSpkiFromPkcs1(const Bytes& rsaPublicKey) {
+    if (rsaPublicKey.size() < 8 || rsaPublicKey[0] != 0x30) {
+        throw Error(ErrorCode::Internal, "expected a DER RSAPublicKey");
+    }
+    Bytes bits{0x00};  // no unused bits
+    bits.insert(bits.end(), rsaPublicKey.begin(), rsaPublicKey.end());
+    Bytes body(std::begin(kRsaAlgorithmId), std::end(kRsaAlgorithmId));
+    Bytes bitString = tlv(0x03, bits);
+    body.insert(body.end(), bitString.begin(), bitString.end());
+    return tlv(0x30, body);
+}
+
+Bytes rsaPkcs1FromModExp(const uint8_t* modulus, size_t modulusLen, const uint8_t* exponent, size_t exponentLen) {
+    if (modulusLen == 0 || exponentLen == 0) throw Error(ErrorCode::Internal, "empty RSA modulus or exponent");
+    Bytes body = tlv(0x02, derInteger(modulus, modulusLen));
+    Bytes e = tlv(0x02, derInteger(exponent, exponentLen));
+    body.insert(body.end(), e.begin(), e.end());
+    return tlv(0x30, body);
+}
+
+void secureZero(void* data, size_t len) {
+    volatile uint8_t* p = static_cast<volatile uint8_t*>(data);
+    while (len--) *p++ = 0;
+}
+
+void secureZero(Bytes& data) {
+    if (!data.empty()) secureZero(data.data(), data.size());
+    data.clear();
+}
+
+void secureZero(std::string& data) {
+    if (!data.empty()) secureZero(&data[0], data.size());
+    data.clear();
 }
 
 std::string hexEncode(const Bytes& data) {

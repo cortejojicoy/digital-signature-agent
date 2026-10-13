@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 
-import type { AgentBridge } from '../shared/ipc';
+import type { AgentBridge, StatusView as Status } from '../shared/ipc';
 import { ConfirmView } from './views/ConfirmView';
+import { ImportCertificateView } from './views/ImportCertificateView';
+import { KeyStorageView } from './views/KeyStorageView';
 import { PairView } from './views/PairView';
 import { StatusView } from './views/StatusView';
 
@@ -11,7 +13,13 @@ declare global {
   }
 }
 
-type Route = { name: 'status' } | { name: 'pair'; origin?: string; code?: string } | { name: 'confirm'; jobId: string };
+type Route =
+  | { name: 'status' }
+  | { name: 'pair'; origin?: string; code?: string }
+  | { name: 'confirm'; jobId: string }
+  // Key storage (pkcs12-key-storage-plan.md §7.1)
+  | { name: 'storage' }
+  | { name: 'import-certificate' };
 
 function parseHash(): Route {
   const hash = window.location.hash.replace(/^#/, '');
@@ -37,6 +45,10 @@ export function App() {
   switch (route.name) {
     case 'confirm':
       return <ConfirmView jobId={route.jobId} />;
+    case 'storage':
+      return <StorageRoute onImport={() => setRoute({ name: 'import-certificate' })} onDone={() => setRoute({ name: 'status' })} />;
+    case 'import-certificate':
+      return <ImportCertificateView onDone={() => setRoute({ name: 'status' })} onBack={() => setRoute({ name: 'status' })} />;
     case 'pair':
       return (
         <PairView
@@ -47,6 +59,22 @@ export function App() {
         />
       );
     default:
-      return <StatusView onPair={() => setRoute({ name: 'pair' })} />;
+      return (
+        <StatusView
+          onPair={() => setRoute({ name: 'pair' })}
+          onChangeStorage={() => setRoute({ name: 'storage' })}
+          onImport={() => setRoute({ name: 'import-certificate' })}
+        />
+      );
   }
+}
+
+/** The chooser opened from Change: needs the current status to show what's there. */
+function StorageRoute({ onImport, onDone }: { onImport: () => void; onDone: () => void }) {
+  const [status, setStatus] = useState<Status | null>(null);
+  useEffect(() => {
+    void window.agent.getStatus().then(setStatus);
+  }, []);
+  if (!status) return <main className="page" aria-busy="true" />;
+  return <KeyStorageView status={status} onImport={onImport} onDone={onDone} onCancel={onDone} />;
 }

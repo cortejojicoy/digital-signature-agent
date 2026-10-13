@@ -14,6 +14,20 @@ Bytes p256SpkiFromX963(const Bytes& point);
 // returned by NCryptSignHash) into ASN.1 DER, the format openssl_verify wants.
 Bytes ecdsaRawToDer(const Bytes& rs);
 
+// Wraps a PKCS#1 RSAPublicKey (SecKeyCopyExternalRepresentation of an RSA
+// public key) in SubjectPublicKeyInfo (rsaEncryption, NULL parameters).
+Bytes rsaSpkiFromPkcs1(const Bytes& rsaPublicKey);
+
+// PKCS#1 RSAPublicKey from a big-endian modulus and exponent
+// (BCRYPT_RSAPUBLIC_BLOB on Windows).
+Bytes rsaPkcs1FromModExp(const uint8_t* modulus, size_t modulusLen, const uint8_t* exponent, size_t exponentLen);
+
+// Overwrites secret bytes (private keys, passwords) in a way the compiler
+// can't drop as a dead store.
+void secureZero(void* data, size_t len);
+void secureZero(Bytes& data);
+void secureZero(std::string& data);
+
 std::string hexEncode(const Bytes& data);
 
 // Platform-specific (CommonCrypto on macOS, BCrypt on Windows).

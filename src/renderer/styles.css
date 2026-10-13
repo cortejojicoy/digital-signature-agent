@@ -664,3 +664,110 @@ div.error > p {
     animation: none;
   }
 }
+
+/* ── Key storage chooser and certificate import (pkcs12-key-storage-plan.md §7) ── */
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.choice {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: start;
+  gap: 12px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.choice.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.choice.is-disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.choice input {
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+
+.choice-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.choice-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.choice-title {
+  font-weight: 600;
+}
+
+.choice-body .warning {
+  margin: 0;
+}
+
+.file-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.password-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.preview .warning {
+  margin: 0;
+}
+
+.chain-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.storage-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.storage-detail {
+  display: block;
+  margin-top: 4px;
+}
+
+.certificate-facts {
+  margin-top: 8px;
+}
+
+.certificate-facts dd {
+  -webkit-user-select: text;
+  user-select: text;
+  word-break: break-word;
+}

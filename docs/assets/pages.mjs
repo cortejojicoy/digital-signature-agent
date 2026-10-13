@@ -594,6 +594,16 @@ public function handle(Request $request, Closure $next)
 <ul>
   <li><code>claim</code>: pending, unexpired, same user, matching token hash. Then invalidate the token. Again → <code>409 job_unavailable</code>.</li>
   <li><code>complete</code>: claimed by this device; the proof verifies with its identity key. Then set <code>device_id</code> on the signature.</li>
+  <li><code>complete</code> by a certificate device: refuse an expired certificate, and re-check revocation when the last check is older than <code>recheck_ttl</code>. Revoked → revoke the device, <code>certificate_revoked</code>.</li>
+</ul>
+
+<h2 id="certificate-checks">Software certificates</h2>
+<p>An agent set to <em>Software certificate</em> pairs with the key of a PKCS#12 file the user imported (e.g. PNPKI). Return <code>accepts_certificates: true</code> from <code>lookup</code> only if you check these at <code>claim</code> when <code>key_source</code> is <code>pkcs12</code>:</p>
+<ul>
+  <li><code>certificate_chain</code> (base64 DER, leaf first) links up to a configured root, each certificate signed by the next. Otherwise → <code>422 certificate_untrusted</code>.</li>
+  <li>The leaf isn’t a CA, may sign (key usage digitalSignature or nonRepudiation), and its key is <code>identity_public_key</code>. Otherwise → <code>422 certificate_untrusted</code>.</li>
+  <li>The leaf is in date → else <code>422 certificate_expired</code>; not revoked (OCSP, then CRL) → else <code>422 certificate_revoked</code>.</li>
+  <li>One active agent device per certificate, across accounts → else <code>409 certificate_in_use</code> with <code>device: { label, device_type }</code>.</li>
 </ul>
 
 <h2 id="config">Config</h2>
@@ -606,6 +616,14 @@ ${editor('config/signature.php', 'php', r`
     'job_ttl'          => 300,
     'pairing_ttl'      => 600,
     'blocked_device_types' => ['virtual_machine'],
+],
+'pkcs12' => [
+    'enabled'          => env('SIGNATURE_AGENT_PKCS12', false),
+    'trusted_roots'    => [/* path to philippine-root-ca-g2.cer */],
+    'revocation'       => 'ocsp_then_crl',  // 'ocsp_then_crl' | 'crl' | 'off'
+    'unreachable'      => 'allow',          // 'allow' | 'deny'
+    'recheck_ttl'      => 86400,
+    'one_device_per_certificate' => true,
 ],`)}`,
   },
 ];

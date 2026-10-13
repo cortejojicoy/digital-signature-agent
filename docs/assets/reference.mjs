@@ -47,6 +47,7 @@ export const sections = [
     "hardware_id_hash": "<sha256 hex> | null"
   },
   "devices_url": "https://…",
+  "accepts_certificates": false,
   "expires_at": "<ISO 8601>"
 }`,
             errors: [{ status: 404, code: 'invalid_code', when: 'The code is unknown, used or expired.' }],
@@ -58,6 +59,7 @@ export const sections = [
               'Before creating keys, the agent also stops with `app_already_paired` if this computer already holds a different account’s signature for this server: one signature per app per computer.',
               '`agent_device` is the account’s paired computer for this app, or `null`. One computer per account: if its `hardware_id_hash` isn’t this computer’s (or either is missing), the agent stops with `account_already_paired` before creating keys. Older servers omit it; the claim is still checked.',
               '`devices_url` is where the account’s signing devices are managed. The agent opens it only if it’s on the server’s origin, and uses the origin otherwise.',
+              '`accepts_certificates`: the server takes an imported PKCS#12 certificate’s key as the identity key and checks its chain. Unless it is `true`, an agent set to *Software certificate* stops with `certificates_disabled` before any key or prompt; older servers omit it.',
             ],
             client: 'agentapi-lookuppairing',
             source: 'src/main/api.ts#L166',
@@ -78,6 +80,9 @@ export const sections = [
   "session_public_key": "<base64 SPKI DER, ES256>",
   "protection": "secure_enclave",
   "user_presence": true,
+  "key_source": "platform",
+  // key_source "pkcs12" only: base64 DER, leaf first
+  "certificate_chain": ["<leaf>", "<intermediate>", "…"],
   "attestation": null,
   "device": {
     "platform": "macos",
@@ -111,6 +116,12 @@ export const sections = [
               { status: 409, code: 'machine_already_paired', when: 'Another account’s active agent device has the same `hardware_id_hash`. The message never names the owner.' },
               { status: 409, code: 'account_already_paired', when: 'This account’s active agent device is on another computer, or either `hardware_id_hash` is missing. The body adds `device: { label, device_type }`, the account’s own computer.' },
               { status: 422, code: 'invalid_proof', when: 'The `register_agent` proof fails, or `replaces.proof` doesn’t verify with that device’s session key.' },
+              { status: 422, code: 'certificates_disabled', when: '`key_source` is `pkcs12` but the server doesn’t accept certificates.' },
+              { status: 422, code: 'certificate_untrusted', when: 'The chain doesn’t reach a trusted root, a link doesn’t verify, the leaf may not sign, or its key isn’t `identity_public_key`.' },
+              { status: 422, code: 'certificate_expired', when: 'The leaf certificate is outside its validity period.' },
+              { status: 422, code: 'certificate_revoked', when: 'OCSP or the CRL says the leaf is revoked.' },
+              { status: 422, code: 'certificate_subject_mismatch', when: 'Subject binding is `name_match` and the certificate’s name isn’t the account’s.' },
+              { status: 409, code: 'certificate_in_use', when: 'Another active agent device already uses this certificate. The body adds `device: { label, device_type }`.' },
               { status: '4xx', code: '…', when: 'The pairing is not pending, it expired, the code doesn’t match, or the algorithm isn’t ES256/RS256.' },
             ],
             notes: [
@@ -119,6 +130,7 @@ export const sections = [
               '`hardware_id_hash` is `sha256(server.salt ‖ hardware uuid)`, or `null` when the firmware has no usable uuid (never the hash of an empty string). Without it the server can’t enforce one device per computer.',
               '`device_type` is one of the 22 catalogue values (see `DEVICE_TYPES`); unknown values become `other`. `chassis_type` is the SMBIOS type 3 value on Windows.',
               'When `attestation` is present it looks like `{ "format": "windows-hello-tpm", "statement": "<base64>", "chain": ["<base64>"] }`. A failed attestation check is not fatal.',
+              '`key_source` is `platform` (a key made in the Secure Enclave / TPM) or `pkcs12` (the key of a certificate the user imported, e.g. PNPKI). With `pkcs12` the same identity key is shared by every app paired with that certificate, `attestation` is `null`, and `certificate_chain` carries the chain. On Windows an imported key held by the TPM is approved with Windows Hello asked by the agent, so `user_presence` is `false`.',
             ],
             client: 'agentapi-claimpairing',
             source: 'src/main/api.ts#L170',

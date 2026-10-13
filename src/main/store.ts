@@ -15,7 +15,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import type { DeviceType } from './device-type';
-import type { Algorithm, Protection } from './keystore';
+import type { Algorithm, KeySource, Protection } from './keystore';
 
 export interface PairedServer {
   id: string;
@@ -34,6 +34,23 @@ export interface PairedServer {
   pairedAt: string;
   /** Optional: pairings made before device types existed are filled in at start-up. */
   deviceType?: DeviceType;
+  /** Missing = 'platform': pairings made before certificates (pkcs12-key-storage-plan.md §6.4). */
+  keySource?: KeySource;
+  /** keySource 'pkcs12': the imported certificate whose key is identityKeyId. */
+  certificateId?: string;
+}
+
+export function keySourceOf(server: Pick<PairedServer, 'keySource'>): KeySource {
+  return server.keySource ?? 'platform';
+}
+
+/**
+ * The keys that belong to this pairing alone, so unpairing may delete them
+ * (pkcs12-key-storage-plan.md §6.5). A certificate's key is shared by every
+ * pairing made with it and is deleted only with the certificate.
+ */
+export function ownedKeyIds(server: Pick<PairedServer, 'keySource' | 'identityKeyId' | 'sessionKeyId'>): string[] {
+  return keySourceOf(server) === 'pkcs12' ? [server.sessionKeyId] : [server.identityKeyId, server.sessionKeyId];
 }
 
 /** An unpair whose server-side revoke failed, retried until it succeeds (§7.3). */

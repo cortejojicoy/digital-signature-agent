@@ -5,3 +5,8 @@ native/build/
 *.log
 .DS_Store
 build/embedded.provisionprofile
+# Real certificates never go in the repo; only the throwaway test fixtures
+# (scripts/make-pkcs12-fixtures.sh) do.
+*.p12
+*.pfx
+!test/fixtures/pkcs12/*.p12

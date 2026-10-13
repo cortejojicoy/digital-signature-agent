@@ -1,13 +1,24 @@
 // Composes the key store, storage, pairing and jobs. The Electron shell
 // (index.ts) drives this; tests drive it directly with a software key store
 // and a mock server.
+import { X509Certificate } from 'node:crypto';
+
 import { AgentApi, ApiError, type Credentials, type FetchLike } from './api';
+import {
+  CertificateError,
+  certificateErrorFrom,
+  describeChain,
+  newCertificateIds,
+  type CertificateDescription,
+  type CertificateStore,
+  type StoredCertificate,
+} from './certificates';
 import { detectDeviceType, isDeviceType, type DeviceType } from './device-type';
 import { JobRunner, type ConfirmRequest, type JobOutcome } from './jobs';
-import type { Capabilities, KeyStore } from './keystore';
-import { deleteKeys, pair, type PairOptions } from './pairing';
+import type { Algorithm, Capabilities, KeySource, KeyStore } from './keystore';
+import { deleteKeys, pair, PairingError, type PairOptions } from './pairing';
 import { normalizeOrigin, normalizeUserCode, parseLink, type OriginPolicy, type PairLink, type PresenceLink } from './protocol';
-import type { PairedServer, PendingRevoke, Store } from './store';
+import { keySourceOf, ownedKeyIds, type PairedServer, type PendingRevoke, type Store } from './store';
 
 export interface AgentOptions extends OriginPolicy {
   keystore: KeyStore;
@@ -16,6 +27,10 @@ export interface AgentOptions extends OriginPolicy {
   fetch?: FetchLike;
   biometryOnly?: boolean;
   pollIntervalMs?: number;
+  /** Imported PKCS#12 certificates (pkcs12-key-storage-plan.md §6.2). Without it, no certificate features. */
+  certificates?: CertificateStore;
+  /** The chosen key storage (settings). Without it, pairings use the platform key. */
+  keyStorage?(): KeySource | null;
   confirm(request: ConfirmRequest): Promise<boolean>;
   parentWindow?(): Buffer | undefined;
   /** A pair link arrived: the UI should show it prefilled for the user to confirm. */
@@ -37,6 +52,24 @@ export interface ServerSummary {
   deviceType: DeviceType;
   /** The same account's other signing devices, as the server last reported them (§7.4). */
   otherDevices: Array<{ label: string; deviceType: DeviceType | null }>;
+  keySource: KeySource;
+  /** keySource 'pkcs12': the certificate's name, e.g. "Test UP 4". */
+  certificateName?: string;
+}
+
+/** What the import screen previews (pkcs12-key-storage-plan.md §7.2). */
+export interface CertificatePreview extends CertificateDescription {
+  algorithm: Algorithm;
+  keyBits: number;
+  /** This certificate is already imported here. */
+  alreadyImported: boolean;
+}
+
+export interface CertificateSummary extends StoredCertificate {
+  /** The newest certificate, which new certificate pairings use. */
+  active: boolean;
+  /** Names of the apps paired with it. */
+  usedBy: string[];
 }
 
 /** What unpair() did (one-computer-per-account-plan.md §7.1). */
@@ -72,6 +105,7 @@ export class Agent {
       credentialsFor: (server) => this.credentialsFor(server),
       confirm: options.confirm,
       parentWindow: options.parentWindow,
+      certificateName: (server) => this.certificateOf(server)?.commonName,
       onUnauthorized: (server) => void this.forget(server),
     });
   }
@@ -147,7 +181,156 @@ export class Agent {
       insecure: s.origin.startsWith('http:'),
       deviceType: s.deviceType ?? 'other',
       otherDevices: this.otherDevices.get(s.id) ?? [],
+      keySource: keySourceOf(s),
+      certificateName: this.certificateOf(s)?.commonName,
     }));
+  }
+
+  // ── Software certificates (pkcs12-key-storage-plan.md §6.2–6.6) ──
+
+  /** Imported certificates, oldest first, with the apps that use each. */
+  certificateSummaries(): CertificateSummary[] {
+    const store = this.options.certificates;
+    if (!store) return [];
+    const active = store.active()?.id;
+    const servers = this.options.store.list();
+    return store.list().map((c) => ({
+      ...c,
+      active: c.id === active,
+      usedBy: servers.filter((s) => s.certificateId === c.id).map((s) => s.name),
+    }));
+  }
+
+  /** Opens a .p12 for the preview. Imports nothing. Throws CertificateError. */
+  async inspectCertificate(data: Buffer, password: string): Promise<CertificatePreview> {
+    await this.requireCertificateSupport();
+    try {
+      const contents = await this.options.keystore.inspectPkcs12(data, password);
+      const description = describeChain(contents.chain);
+      return {
+        ...description,
+        algorithm: contents.algorithm,
+        keyBits: contents.keyBits,
+        alreadyImported: this.options.certificates?.findByFingerprint(description.fingerprint256) != null,
+      };
+    } catch (err) {
+      throw certificateErrorFrom(err);
+    }
+  }
+
+  /**
+   * Imports a .p12's key, non-exportable, and makes it the active
+   * certificate. On macOS this seals it to the Secure Enclave; signing then
+   * needs Touch ID or the password. Older certificates that no pairing uses
+   * any more are removed (§6.6).
+   */
+  async importCertificate(data: Buffer, password: string): Promise<StoredCertificate> {
+    const store = await this.requireCertificateSupport();
+    let description: CertificateDescription;
+    try {
+      description = describeChain((await this.options.keystore.inspectPkcs12(data, password)).chain);
+    } catch (err) {
+      throw certificateErrorFrom(err);
+    }
+
+    // The same certificate again: make it the active one, keep its key.
+    const existing = store.findByFingerprint(description.fingerprint256);
+    if (existing && (await this.options.keystore.findKey(existing.keyId))) {
+      await store.remove(existing.id);
+      await store.save(existing);
+      await this.pruneCertificates();
+      this.options.onServersChanged?.();
+      return existing;
+    }
+
+    const { id, keyId } = newCertificateIds();
+    let imported;
+    try {
+      imported = await this.options.keystore.importPkcs12({
+        keyId,
+        data,
+        password,
+        requireUserPresence: true,
+        biometryOnly: this.options.biometryOnly,
+      });
+    } catch (err) {
+      throw certificateErrorFrom(err);
+    }
+    const leafSpki = new X509Certificate(description.chain[0]).publicKey.export({ format: 'der', type: 'spki' });
+    if (!imported.key.spki.equals(leafSpki)) {
+      await deleteKeys(this.options.keystore, [keyId]);
+      throw new CertificateError('E_KEY_MISMATCH', "The private key in this file doesn't belong to its certificate.");
+    }
+
+    const certificate: StoredCertificate = {
+      id,
+      keyId,
+      subject: description.subject,
+      commonName: description.commonName,
+      organization: description.organization,
+      issuer: description.issuer,
+      issuerName: description.issuerName,
+      serialHex: description.serialHex,
+      notBefore: description.notBefore,
+      notAfter: description.notAfter,
+      fingerprint256: description.fingerprint256,
+      chain: description.chain.map((der) => der.toString('base64')),
+      algorithm: imported.key.algorithm,
+      protection: imported.key.protection,
+      userPresence: imported.key.userPresence,
+      pnpki: description.pnpki,
+      importedAt: new Date().toISOString(),
+    };
+    if (existing) await store.remove(existing.id); // its key was gone
+    await store.save(certificate);
+    await this.pruneCertificates();
+    this.options.onServersChanged?.();
+    return certificate;
+  }
+
+  /** Deletes a certificate and its key. Refused while an app is paired with it (§6.5). */
+  async removeCertificate(id: string): Promise<void> {
+    const store = await this.requireCertificateSupport();
+    const certificate = store.get(id);
+    if (!certificate) throw new CertificateError('not_found', 'That certificate is no longer here.');
+    const usedBy = this.options.store.list().filter((s) => s.certificateId === id);
+    if (usedBy.length > 0) {
+      const names = usedBy.map((s) => s.name).join(', ');
+      throw new CertificateError('in_use', `Unpair ${names} first: ${usedBy.length === 1 ? 'it signs' : 'they sign'} with this certificate.`);
+    }
+    await deleteKeys(this.options.keystore, [certificate.keyId]);
+    await store.remove(id);
+    this.options.onServersChanged?.();
+  }
+
+  /** Older certificates go once no pairing uses them; the active one stays (§6.6). */
+  private async pruneCertificates(): Promise<void> {
+    const store = this.options.certificates;
+    if (!store) return;
+    const active = store.active()?.id;
+    const inUse = new Set(this.options.store.list().map((s) => s.certificateId));
+    for (const certificate of store.list()) {
+      if (certificate.id === active || inUse.has(certificate.id)) continue;
+      await deleteKeys(this.options.keystore, [certificate.keyId]);
+      await store.remove(certificate.id);
+    }
+  }
+
+  private certificateOf(server: PairedServer): StoredCertificate | null {
+    return server.certificateId ? (this.options.certificates?.get(server.certificateId) ?? null) : null;
+  }
+
+  private async requireCertificateSupport(): Promise<CertificateStore> {
+    const store = this.options.certificates;
+    if (!store || !(await this.options.keystore.capabilities()).pkcs12) {
+      throw new CertificateError(
+        'E_UNSUPPORTED',
+        process.platform === 'darwin'
+          ? 'Importing a certificate needs macOS 15 or later.'
+          : "Importing a certificate isn't supported on this computer.",
+      );
+    }
+    return store;
   }
 
   /**
@@ -201,6 +384,8 @@ export class Agent {
     const code = normalizeUserCode(codeInput);
     if (!code) throw new Error('Enter the 8-character code, e.g. K7QM-2XPD');
 
+    const certificate = this.pairingCertificate();
+
     // An unpair that never reached this server still holds the computer
     // there; finish it first, or a different account would be refused.
     await this.retryRevokes(origin);
@@ -212,13 +397,28 @@ export class Agent {
         api: this.apiFor(origin),
         agentVersion: this.options.agentVersion,
         biometryOnly: this.options.biometryOnly,
+        certificate,
         pollIntervalMs: this.options.pollIntervalMs,
       },
       code,
       opts,
     );
+    await this.pruneCertificates(); // a re-pair may have left an old certificate unused
     this.options.onServersChanged?.();
     return paired;
+  }
+
+  /** The certificate new pairings use, or null for a platform key (§6.4). */
+  private pairingCertificate(): StoredCertificate | null {
+    // No keyStorage option at all (tests, older callers): the platform key.
+    const storage = this.options.keyStorage ? this.options.keyStorage() : 'platform';
+    if (storage === null) {
+      throw new PairingError('no_key_storage', 'Choose where your signing key lives first.');
+    }
+    if (storage === 'platform') return null;
+    const certificate = this.options.certificates?.active() ?? null;
+    if (!certificate) throw new PairingError('certificate_missing', 'Import your certificate first.');
+    return certificate;
   }
 
   /** Entry point for every kukuxsign:// link. Unknown shapes are dropped. */
@@ -291,10 +491,15 @@ export class Agent {
           },
           token,
         );
-        // Keep only the session key: it authenticates the retry, and can't sign documents.
-        await deleteKeys(this.options.keystore, [server.identityKeyId]);
+        // Keep only the session key: it authenticates the retry, and can't
+        // sign documents. A certificate's key stays with the certificate (§6.5).
+        await deleteKeys(
+          this.options.keystore,
+          ownedKeyIds(server).filter((keyId) => keyId !== server.sessionKeyId),
+        );
         await this.options.store.remove(server.id);
         this.otherDevices.delete(server.id);
+        await this.pruneCertificates();
         this.options.onServersChanged?.();
         return { status: 'removed_locally' };
       }
@@ -346,9 +551,10 @@ export class Agent {
   }
 
   private async forget(server: PairedServer): Promise<void> {
-    await deleteKeys(this.options.keystore, [server.identityKeyId, server.sessionKeyId]);
+    await deleteKeys(this.options.keystore, ownedKeyIds(server));
     await this.options.store.remove(server.id);
     this.otherDevices.delete(server.id);
+    await this.pruneCertificates();
     this.options.onServersChanged?.();
   }
 }

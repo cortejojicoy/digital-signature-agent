@@ -8,6 +8,10 @@ When tagging a release, rename `Unreleased` to the version, e.g.
 
 ## Unreleased
 
+- Choose where your signing key lives: this computer's security chip (Secure Enclave / TPM), or a software certificate
+- Import a .p12 or .pfx certificate, such as your PNPKI certificate: see its name, issuer and expiry before importing. Its key is locked to this computer and can't be exported (macOS 15 or later, Windows)
+- Pair apps with your certificate: the app checks its issuer and that it hasn't been revoked
+- The status window lists the apps paired with the key storage you chose
 - Sign in to the UPLB Signature Hub from this computer: check the code your browser shows, then approve with Touch ID or Windows Hello
 - The confirm window says which app asked, e.g. "performance asks: IPCR Q3"
 - Approve moving your signature to a new computer

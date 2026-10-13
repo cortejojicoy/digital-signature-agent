@@ -1,14 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import type { StatusView as Status, UpdateView } from '../../shared/ipc';
+import type { CertificateView, KeySourceView, StatusView as Status, UpdateView } from '../../shared/ipc';
 import { IconButton, type IconName } from '../icons';
-import { deviceTypeLabel, presenceLabel, protectionLabel } from '../labels';
+import { deviceTypeLabel, formatDate, keyStorageLabel, pairingKeyLabel, presenceLabel } from '../labels';
 import { OfflinePrompt, useUnpair } from '../unpair';
 import { AboutDialog } from './AboutDialog';
+import { KeyStorageView } from './KeyStorageView';
 
-export function StatusView({ onPair }: { onPair: () => void }) {
+interface Props {
+  onPair: () => void;
+  /** Change next to Key storage (pkcs12-key-storage-plan.md §7.3). */
+  onChangeStorage: () => void;
+  onImport: () => void;
+}
+
+export function StatusView({ onPair, onChangeStorage, onImport }: Props) {
   const [status, setStatus] = useState<Status | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
+  const [certificateNote, setCertificateNote] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     void window.agent.getStatus().then(setStatus);
@@ -21,6 +30,10 @@ export function StatusView({ onPair }: { onPair: () => void }) {
   }, [refresh]);
 
   if (!status) return <main className="page" aria-busy="true" />;
+  // First launch: choose where the signing key lives before anything else (§1.1).
+  if (status.keyStorage.selected === null) {
+    return <KeyStorageView status={status} onImport={onImport} onDone={refresh} />;
+  }
 
   const retry = async (origin: string) => {
     setRetrying(origin);
@@ -34,6 +47,21 @@ export function StatusView({ onPair }: { onPair: () => void }) {
 
   const caps = status.capabilities;
   const dev = status.developerMode;
+  const storage = status.keyStorage;
+  const selected: KeySourceView = storage.selected ?? 'platform';
+  const other: KeySourceView = selected === 'platform' ? 'pkcs12' : 'platform';
+  const certificate = storage.certificate;
+  const shown = status.servers.filter((s) => s.keySource === selected);
+  const elsewhere = status.servers.length - shown.length;
+  const canPair = selected === 'platform' || certificate !== null;
+
+  const switchStorage = () => void window.agent.setKeyStorage(other).then(refresh);
+  const removeCertificate = async (c: CertificateView) => {
+    setCertificateNote(null);
+    const result = await window.agent.removeCertificate(c.id);
+    if (!result.ok) setCertificateNote(result.error);
+    refresh();
+  };
 
   return (
     <main className="page">
@@ -47,23 +75,101 @@ export function StatusView({ onPair }: { onPair: () => void }) {
         <dl className="facts">
           <dt>Key storage</dt>
           <dd>
-            {caps.hardware ? (
-              <span className="badge badge-strong">{status.platform === 'windows' ? 'TPM' : 'Secure Enclave'}</span>
-            ) : (
-              <span className="badge badge-weak">Software · lower assurance</span>
+            <span className="storage-row">
+              {selected === 'pkcs12' ? (
+                <span className="badge badge-strong">
+                  {certificate ? `Certificate · ${certificate.commonName}` : keyStorageLabel(status.platform, 'pkcs12')}
+                </span>
+              ) : caps.hardware ? (
+                <span className="badge badge-strong">{keyStorageLabel(status.platform, 'platform')}</span>
+              ) : (
+                <span className="badge badge-weak">Software · lower assurance</span>
+              )}
+              <button type="button" className="link-button" onClick={onChangeStorage}>
+                Change
+              </button>
+            </span>
+            {selected === 'pkcs12' && certificate && (
+              <span className="muted small storage-detail">
+                {certificate.issuerName} · until {formatDate(certificate.notAfter)}
+              </span>
+            )}
+            {selected === 'pkcs12' && certificate?.expiresSoon && (
+              <span className="warning small storage-detail">Expires soon: renew it and import the new file.</span>
             )}
           </dd>
-          <dt>Approval</dt>
-          <dd>{caps.userPresence ? presenceLabel(status.platform, true) : 'Not available'}</dd>
-          <dt>Attestation</dt>
-          <dd>{caps.attestation ? 'Yes' : 'No'}</dd>
+          {(selected === 'platform' || certificate) && (
+            <>
+              <dt>Approval</dt>
+              <dd>
+                {selected === 'pkcs12' && certificate
+                  ? certificateApproval(status.platform, certificate)
+                  : caps.userPresence
+                    ? presenceLabel(status.platform, true)
+                    : 'Not available'}
+              </dd>
+            </>
+          )}
+          {selected === 'platform' && (
+            <>
+              <dt>Attestation</dt>
+              <dd>{caps.attestation ? 'Yes' : 'No'}</dd>
+            </>
+          )}
         </dl>
+        {selected === 'pkcs12' && !certificate && (
+          <div className="warning small">
+            <p>No certificate imported yet. Import your .p12 or .pfx to pair apps with it.</p>
+            <IconButton icon="download" label="Import certificate" variant="primary" tip="above" onClick={onImport} />
+          </div>
+        )}
+        {selected === 'pkcs12' && certificate && (
+          <details className="other-devices small">
+            <summary className="muted">Certificate details</summary>
+            <dl className="facts certificate-facts">
+              <dt>Subject</dt>
+              <dd>{certificate.subject}</dd>
+              <dt>Issuer</dt>
+              <dd>{certificate.issuer}</dd>
+              <dt>Serial</dt>
+              <dd className="mono">{certificate.serialHex}</dd>
+              <dt>SHA-256</dt>
+              <dd className="mono">{certificate.fingerprint256}</dd>
+              <dt>Valid</dt>
+              <dd>
+                {formatDate(certificate.notBefore)} – {formatDate(certificate.notAfter)}
+              </dd>
+              <dt>Key held by</dt>
+              <dd>{certificateHolder(status.platform, certificate)}</dd>
+            </dl>
+            <div className="button-row">
+              <IconButton icon="download" label="Import a different certificate" tipAlign="start" onClick={onImport} />
+              <IconButton
+                icon="trash"
+                label={certificate.usedBy.length > 0 ? 'Unpair its apps to remove it' : 'Remove certificate'}
+                tipAlign="start"
+                onClick={() => void removeCertificate(certificate)}
+              />
+            </div>
+          </details>
+        )}
+        {certificateNote && (
+          <p className="error small" role="alert">
+            {certificateNote}
+          </p>
+        )}
       </section>
 
       <section className="card">
         <div className="card-title-row">
-          <h2>Paired apps</h2>
-          <IconButton icon="plus" label="Pair with an app" variant="primary" onClick={onPair} />
+          <h2>Paired apps · {selected === 'pkcs12' ? 'certificate' : keyStorageLabel(status.platform, 'platform')}</h2>
+          <IconButton
+            icon="plus"
+            label={canPair ? 'Pair with an app' : 'Import your certificate first'}
+            variant="primary"
+            disabled={!canPair}
+            onClick={onPair}
+          />
         </div>
         <p className="muted small">
           One signature per app on this computer, and one computer per account. To use another account for an app, unpair
@@ -74,14 +180,14 @@ export function StatusView({ onPair }: { onPair: () => void }) {
             {unpairing.note}
           </p>
         )}
-        {status.servers.length === 0 ? (
+        {shown.length === 0 ? (
           <p className="muted">
             None yet. Open the website (<span className="mono">signature.uplb.edu.ph</span> for UPLB) and choose{' '}
             <strong>Pair this computer</strong>.
           </p>
         ) : (
           <ul className="server-list">
-            {status.servers.map((s) => (
+            {shown.map((s) => (
               <li key={s.id} className="server">
                 <div>
                   <div className="server-name">
@@ -90,7 +196,7 @@ export function StatusView({ onPair }: { onPair: () => void }) {
                   </div>
                   <div className="mono muted">{s.origin}</div>
                   <div className="muted small">
-                    {[s.userName, s.deviceLabel, deviceTypeLabel(s.deviceType), protectionLabel(s.protection)]
+                    {[s.userName, s.deviceLabel, deviceTypeLabel(s.deviceType), pairingKeyLabel(s)]
                       .filter(Boolean)
                       .join(' · ')}
                   </div>
@@ -128,6 +234,25 @@ export function StatusView({ onPair }: { onPair: () => void }) {
             ))}
           </ul>
         )}
+        {elsewhere > 0 && (
+          <p className="muted small">
+            {elsewhere} {elsewhere === 1 ? 'app uses' : 'apps use'}{' '}
+            {other === 'pkcs12' ? 'your certificate' : `the ${keyStorageLabel(status.platform, 'platform')}`}.{' '}
+            <button type="button" className="link-button" onClick={switchStorage}>
+              Switch to see {elsewhere === 1 ? 'it' : 'them'}
+            </button>
+          </p>
+        )}
+        {selected === 'pkcs12' &&
+          storage.olderCertificates
+            .filter((c) => c.usedBy.length > 0)
+            .map((c) => (
+              <p key={c.id} className="warning small">
+                {c.usedBy.join(', ')} still {c.usedBy.length === 1 ? 'signs' : 'sign'} with your older certificate (
+                {c.commonName}, until {formatDate(c.notAfter)}). Pair {c.usedBy.length === 1 ? 'it' : 'them'} again to use{' '}
+                {certificate?.commonName ?? 'the new one'}.
+              </p>
+            ))}
         {status.pendingRevokes.length > 0 && (
           <ul className="server-list">
             {status.pendingRevokes.map((r) => (
@@ -173,6 +298,19 @@ export function StatusView({ onPair }: { onPair: () => void }) {
       </section>
     </main>
   );
+}
+
+function certificateApproval(platform: Status['platform'], c: CertificateView): string {
+  if (c.userPresence) return platform === 'windows' ? 'Windows password for the certificate' : presenceLabel(platform, true);
+  // Imported into the TPM: Hello can't protect it, so the agent asks (§5.3).
+  if (platform === 'windows' && c.protection === 'tpm') return 'Windows Hello, asked by the agent';
+  return 'No OS prompt';
+}
+
+function certificateHolder(platform: Status['platform'], c: CertificateView): string {
+  if (c.protection === 'tpm') return 'TPM (imported, not exportable)';
+  if (platform === 'macos') return c.userPresence ? 'Sealed by the Secure Enclave' : 'Keychain (not exportable)';
+  return 'Windows key storage (not exportable)';
 }
 
 // The version line doubles as the update control: one small icon that turns

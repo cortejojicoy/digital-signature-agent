@@ -16,9 +16,12 @@
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Security.Credentials.h>
+#include <winrt/Windows.Security.Credentials.UI.h>
 #include <winrt/Windows.Security.Cryptography.h>
 #include <winrt/Windows.Security.Cryptography.Core.h>
 #include <winrt/Windows.Storage.Streams.h>
+
+#include <UserConsentVerifierInterop.h>
 
 namespace ks::win {
 namespace {
@@ -173,6 +176,50 @@ void HelloKeyStore::remove(const std::string& keyId) {
         KeyCredentialManager::DeleteAsync(winrt::to_hstring(keyId)).get();
     } catch (const winrt::hresult_error&) {
         // Not found: nothing to delete.
+    }
+}
+
+// ── Consent for imported certificate keys (pkcs12-key-storage-plan.md §5.3) ──
+
+bool consentAvailable() {
+    ensureApartment();
+    try {
+        using winrt::Windows::Security::Credentials::UI::UserConsentVerifier;
+        using winrt::Windows::Security::Credentials::UI::UserConsentVerifierAvailability;
+        return UserConsentVerifier::CheckAvailabilityAsync().get() == UserConsentVerifierAvailability::Available;
+    } catch (const winrt::hresult_error&) {
+        return false;
+    }
+}
+
+void requireConsent(HWND parent, const std::string& reason) {
+    using winrt::Windows::Foundation::IAsyncOperation;
+    using winrt::Windows::Security::Credentials::UI::UserConsentVerificationResult;
+    using winrt::Windows::Security::Credentials::UI::UserConsentVerifier;
+    ensureApartment();
+
+    const winrt::hstring message = winrt::to_hstring(reason.empty() ? std::string("sign with your certificate") : reason);
+    UserConsentVerificationResult result;
+    if (parent) {
+        // Desktop apps parent the Hello dialog through the interop interface.
+        auto interop = winrt::get_activation_factory<UserConsentVerifier, IUserConsentVerifierInterop>();
+        IAsyncOperation<UserConsentVerificationResult> operation{nullptr};
+        winrt::check_hresult(interop->RequestVerificationForWindowAsync(
+            parent, static_cast<HSTRING>(winrt::get_abi(message)), winrt::guid_of<decltype(operation)>(),
+            winrt::put_abi(operation)));
+        result = operation.get();
+    } else {
+        PromptForegrounder foreground(GetForegroundWindow());
+        result = UserConsentVerifier::RequestVerificationAsync(message).get();
+    }
+    switch (result) {
+        case UserConsentVerificationResult::Verified:
+            return;
+        case UserConsentVerificationResult::Canceled:
+        case UserConsentVerificationResult::RetriesExhausted:
+            throw Error(ErrorCode::Cancelled, "Windows Hello was cancelled");
+        default:
+            throw Error(ErrorCode::Internal, "Windows Hello could not verify you");
     }
 }
 

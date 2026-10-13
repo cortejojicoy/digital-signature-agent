@@ -4,6 +4,8 @@ import path from 'node:path';
 
 export type Protection = 'secure_enclave' | 'tpm' | 'software';
 export type Algorithm = 'ES256' | 'RS256';
+/** Where a pairing's identity key comes from (pkcs12-key-storage-plan.md §4). */
+export type KeySource = 'platform' | 'pkcs12';
 
 export interface KeyInfo {
   keyId: string;
@@ -19,6 +21,21 @@ export interface Capabilities {
   hardware: boolean;
   userPresence: boolean;
   attestation: boolean;
+  /** importPkcs12 works here: macOS 15+, Windows. */
+  pkcs12: boolean;
+}
+
+/** A PKCS#12 file's public contents (pkcs12-key-storage-plan.md §5.1). */
+export interface Pkcs12Contents {
+  /** DER certificates, the private key's own first. */
+  chain: Buffer[];
+  algorithm: Algorithm;
+  keyBits: number;
+}
+
+export interface ImportedCertificate extends Pkcs12Contents {
+  /** `spki` is the first certificate's public key. */
+  key: KeyInfo;
 }
 
 export interface AttestationResult {
@@ -51,10 +68,29 @@ export interface KeyStore {
   attest(keyId: string): Promise<AttestationResult | null>;
   deleteKey(keyId: string): Promise<void>;
   deviceInfo(salt: string): Promise<DeviceInfo>;
+  /** Opens a .p12 / .pfx and returns its certificates. Persists nothing. */
+  inspectPkcs12(data: Buffer, password: string): Promise<Pkcs12Contents>;
+  /** Imports its private key under `keyId`, never exportable. The key never reaches JS. */
+  importPkcs12(o: {
+    keyId: string;
+    data: Buffer;
+    password: string;
+    requireUserPresence: boolean;
+    biometryOnly?: boolean;
+  }): Promise<ImportedCertificate>;
 }
 
 /** Error codes set on `err.code` by the native module. */
-export type KeyStoreErrorCode = 'E_NOT_FOUND' | 'E_EXISTS' | 'E_CANCELLED' | 'E_UNSUPPORTED' | 'E_INTERNAL';
+export type KeyStoreErrorCode =
+  | 'E_NOT_FOUND'
+  | 'E_EXISTS'
+  | 'E_CANCELLED'
+  | 'E_UNSUPPORTED'
+  | 'E_INTERNAL'
+  /** PKCS#12 import: wrong password, not a PKCS#12 file with one key, key not the certificate's. */
+  | 'E_BAD_PASSWORD'
+  | 'E_BAD_FILE'
+  | 'E_KEY_MISMATCH';
 
 export function isKeyStoreError(err: unknown, code: KeyStoreErrorCode): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === code;

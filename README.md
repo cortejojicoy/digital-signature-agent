@@ -49,6 +49,16 @@ How macOS keys are stored depends on the build:
 | Free (ad-hoc signed) | Secure Enclave, via CryptoKit: an SE-wrapped blob in `<userData>/keys`, usable only by this Mac's chip |
 | Mac without a Secure Enclave | Non-exportable software key, shown as *Software key · lower assurance* |
 
+On first launch the agent asks where the signing key lives: the security
+chip (above), or a **software certificate** imported from a PKCS#12 file
+(`.p12` / `.pfx`, e.g. PNPKI). An imported key is never exportable: on macOS
+(15 or later) it is sealed to a Secure Enclave key that needs Touch ID or the
+password to open, and on Windows it goes into the TPM, or Windows key storage
+with a password on each use. Design and server checks:
+[pkcs12-key-storage-plan.md](pkcs12-key-storage-plan.md). Test fixtures come
+from `scripts/make-pkcs12-fixtures.sh`; real certificates never go in the
+repo (`.gitignore` excludes `*.p12` / `*.pfx`).
+
 Free macOS builds also keep Chromium and the agent's tokens out of the
 keychain. The keychain ties access to the code signature, and an ad-hoc
 signature changes with every build, so otherwise macOS would ask for a password
@@ -109,6 +119,12 @@ open the returned `kukuxsign://job/…` link. To try the hub flows, add
 `"requesting_app":"performance"` or `"purpose":"transfer","transfer":{…}` to
 the job, or start a sign-in with `curl -X POST <origin>/__dev/logins` and open
 its `kukuxsign://login/…` link.
+
+To try a software certificate, start the mock server with
+`npm run mock-server -- --certificates`: it trusts the Philippine Root CA - G2
+and the test fixtures' root. Add `--revoke <serial hex>` to treat a
+certificate as revoked, e.g. the serial of a `…_REVOKED.p12` test file. In the
+agent choose **Software certificate**, import the file, then pair as usual.
 
 ### Testing against a local project
 

@@ -33,6 +33,12 @@ export interface PairingLookup {
   agent_device?: AccountDevice | null;
   /** Where the account's signing devices are managed on the web. Older servers omit it. */
   devices_url?: string;
+  /**
+   * The server takes software certificates (PKCS#12) as identity keys and
+   * checks their chain (pkcs12-key-storage-plan.md §8). Absent = no: older
+   * servers would store the key without checking the certificate.
+   */
+  accepts_certificates?: boolean;
   expires_at: string;
 }
 
@@ -51,6 +57,10 @@ export interface PairingClaim {
   session_public_key: string;
   protection: 'secure_enclave' | 'tpm' | 'software';
   user_presence: boolean;
+  /** 'pkcs12': the identity key is an imported certificate's (§8). Older agents omit it. */
+  key_source?: 'platform' | 'pkcs12';
+  /** key_source 'pkcs12': base64 DER, leaf first; the leaf's key is identity_public_key. */
+  certificate_chain?: string[];
   attestation: { format: string; statement: string; chain: string[] } | null;
   device: {
     platform: string;

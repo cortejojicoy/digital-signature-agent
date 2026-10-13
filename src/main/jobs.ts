@@ -33,6 +33,8 @@ export interface JobDeps {
   confirm(request: ConfirmRequest): Promise<boolean>;
   /** Native handle of the window the OS prompt should be parented to. */
   parentWindow?(): Buffer | undefined;
+  /** A certificate pairing's certificate name, for the OS prompt (pkcs12-key-storage-plan.md §6.7). */
+  certificateName?(server: PairedServer): string | undefined;
   onUnauthorized?(server: PairedServer): void;
 }
 
@@ -127,7 +129,7 @@ export class JobRunner {
       signature = await this.deps.keystore.sign(
         server.identityKeyId,
         Buffer.from(message, 'utf8'),
-        promptReason(job, server),
+        promptReason(job, server, this.deps.certificateName?.(server)),
         this.deps.parentWindow?.(),
       );
     } catch (err) {
@@ -151,9 +153,10 @@ const NOT_PAIRED =
   "This computer isn't paired with the app you're signing in to. Pair it first: open the website and choose Pair this computer.";
 
 /** What the Touch ID / Hello prompt says the key is for. */
-function promptReason(job: AgentJob, server: PairedServer): string {
+function promptReason(job: AgentJob, server: PairedServer, certificateName?: string): string {
   if (job.purpose === 'login') return `sign in to ${server.name} (code ${job.login!.match_code})`;
   if (job.purpose === 'transfer') return `move ${job.transfer!.name}'s signature to ${job.transfer!.device}`;
+  if (certificateName) return `sign "${job.document.title}" with your certificate (${certificateName})`;
   return `sign "${job.document.title}" as ${job.signer.name}`;
 }
 

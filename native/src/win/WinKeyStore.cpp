@@ -4,8 +4,14 @@
 //                                      → TPM (PCP) with userPresence = false
 //                                      → software (KSP)
 //   session key                        → TPM (PCP) → software (KSP)
+//   imported .p12 key                  → TPM (PCP) + Hello consent before each use
+//                                      → software (KSP) with a Windows password on each use
+//   (pkcs12-key-storage-plan.md §5.3)
 
 #include <winrt/base.h>
+
+#include <filesystem>
+#include <fstream>
 
 #include "WinStores.h"
 
@@ -35,6 +41,31 @@ namespace {
 using win::CngKeyStore;
 using win::HelloKeyStore;
 
+// <keyDirectory()>/<keyId>.consent marks an imported TPM key that needs Hello
+// consent before each use. Hello can't protect a key it didn't create, so the
+// agent enforces it (and reports userPresence = false).
+std::filesystem::path consentMarker(const std::string& keyId) {
+    return std::filesystem::path(win::widen(keyDirectory())) / win::widen(keyId + ".consent");
+}
+
+bool needsConsent(const std::string& keyId) {
+    std::error_code ec;
+    return std::filesystem::exists(consentMarker(keyId), ec);
+}
+
+void writeConsentMarker(const std::string& keyId) {
+    std::error_code ec;
+    std::filesystem::create_directories(consentMarker(keyId).parent_path(), ec);
+    std::ofstream out(consentMarker(keyId), std::ios::binary | std::ios::trunc);
+    out << "consent";
+    if (!out) throw Error(ErrorCode::Internal, "could not write the consent marker");
+}
+
+void removeConsentMarker(const std::string& keyId) {
+    std::error_code ec;
+    std::filesystem::remove(consentMarker(keyId), ec);
+}
+
 class WinKeyStore final : public KeyStore {
 public:
     explicit WinKeyStore(Backend backend)
@@ -44,6 +75,7 @@ public:
 
     Capabilities capabilities() override {
         Capabilities caps;
+        caps.pkcs12 = true;
         if (backend_ == Backend::Software) return caps;
         caps.hardware = pcp_.available();
         caps.userPresence = hello_.supported();
@@ -78,15 +110,18 @@ public:
         });
     }
 
-    Bytes sign(const std::string& keyId, const Bytes& message, const std::string& /*reason*/,
+    Bytes sign(const std::string& keyId, const Bytes& message, const std::string& reason,
                void* parentWindow) override {
         // Hello can't show custom text; the agent's confirm window shows the
         // document title before this call (§10.2).
+        HWND parent = static_cast<HWND>(parentWindow);
         return guard([&] {
             switch (locate(keyId)) {
-                case Where::Pcp: return pcp_.sign(keyId, message);
-                case Where::Hello: return hello_.sign(keyId, message, static_cast<HWND>(parentWindow));
-                case Where::Ksp: return ksp_.sign(keyId, message);
+                case Where::Pcp:
+                    if (needsConsent(keyId)) win::requireConsent(parent, reason);
+                    return pcp_.sign(keyId, message, parent, reason);
+                case Where::Hello: return hello_.sign(keyId, message, parent);
+                case Where::Ksp: return ksp_.sign(keyId, message, parent, reason);
                 case Where::None: break;
             }
             throw Error(ErrorCode::NotFound, "key not found");
@@ -112,6 +147,45 @@ public:
                 hello_.remove(keyId);
             }
             ksp_.remove(keyId);
+            removeConsentMarker(keyId);
+        });
+    }
+
+    Pkcs12Contents inspectPkcs12(const Bytes& data, const std::string& password) override {
+        return win::parsePkcs12(data, password, /*withKey=*/false).contents;
+    }
+
+    ImportedCertificate importPkcs12(const ImportOptions& opts) override {
+        return guard([&] {
+            if (locate(opts.keyId) != Where::None) throw Error(ErrorCode::Exists, "a key with this id already exists");
+            win::ParsedPkcs12 parsed = win::parsePkcs12(opts.data, opts.password, /*withKey=*/true);
+
+            ImportedCertificate result;
+            result.contents = parsed.contents;
+            bool imported = false;
+            const bool consent = opts.requireUserPresence && backend_ == Backend::Auto && win::consentAvailable();
+            // The TPM when presence can still be asked for (Hello consent) or isn't wanted.
+            if (backend_ == Backend::Auto && pcp_.available() && (consent || !opts.requireUserPresence)) {
+                try {
+                    result.key = pcp_.importKey(opts.keyId, parsed.blobType, parsed.privateBlob, false);
+                    if (consent) writeConsentMarker(opts.keyId);
+                    result.key.userPresence = false;  // agent-enforced, so not claimed (§13, D7)
+                    imported = true;
+                } catch (const Error&) {
+                    // This TPM won't take the key (spike S2): fall back to the KSP.
+                    pcp_.remove(opts.keyId);
+                    removeConsentMarker(opts.keyId);
+                }
+            }
+            if (!imported) {
+                const bool strong = opts.requireUserPresence && backend_ == Backend::Auto;
+                result.key = ksp_.importKey(opts.keyId, parsed.blobType, parsed.privateBlob, strong);
+            }
+            if (result.key.spki != parsed.spki) {
+                remove(opts.keyId);
+                throw Error(ErrorCode::KeyMismatch, "the private key doesn't match the certificate");
+            }
+            return result;
         });
     }
 

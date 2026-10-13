@@ -28,6 +28,13 @@ const bridge: AgentBridge = {
   installUpdate: () => ipcRenderer.invoke(IPC.installUpdate),
   openReleases: () => ipcRenderer.invoke(IPC.openReleases),
   fitContent: (height) => ipcRenderer.invoke(IPC.fitContent, Number(height)),
+  setKeyStorage: (storage) => ipcRenderer.invoke(IPC.setKeyStorage, storage === 'pkcs12' ? 'pkcs12' : 'platform'),
+  chooseCertificateFile: () => ipcRenderer.invoke(IPC.chooseCertificateFile),
+  inspectCertificate: (input) =>
+    ipcRenderer.invoke(IPC.inspectCertificate, { token: String(input.token), password: String(input.password) }),
+  importCertificate: (input) =>
+    ipcRenderer.invoke(IPC.importCertificate, { token: String(input.token), password: String(input.password) }),
+  removeCertificate: (id) => ipcRenderer.invoke(IPC.removeCertificate, String(id)),
   onStatusChanged: (cb) => subscribe(IPC.statusChanged, cb),
   onPairingProgress: (cb) => subscribe(IPC.pairingProgress, cb),
   onPairPrefill: (cb) => subscribe(IPC.pairPrefill, cb),

@@ -18,6 +18,7 @@
           "dependencies": ["secure_enclave_blob"],
           "sources": [
             "src/mac/SecureEnclaveKeyStore.mm",
+            "src/mac/Pkcs12.mm",
             "src/mac/DeviceInfo.mm",
             "src/mac/Hash.cc"
           ],
@@ -49,6 +50,7 @@
             "src/win/WinKeyStore.cpp",
             "src/win/HelloKeyStore.cpp",
             "src/win/PcpKeyStore.cpp",
+            "src/win/Pkcs12Import.cpp",
             "src/win/DeviceInfo.cpp",
             "src/win/Hash.cpp"
           ],
@@ -67,6 +69,7 @@
           "libraries": [
             "windowsapp.lib",
             "ncrypt.lib",
+            "crypt32.lib",
             "bcrypt.lib",
             "advapi32.lib",
             "user32.lib"
