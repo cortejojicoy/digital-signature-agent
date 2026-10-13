@@ -129,6 +129,7 @@ Napi::Value Capabilities(const Napi::CallbackInfo& info) {
             o.Set("hardware", caps->hardware);
             o.Set("userPresence", caps->userPresence);
             o.Set("attestation", caps->attestation);
+            o.Set("pkcs12", caps->pkcs12);
             return o;
         });
 }
@@ -206,6 +207,85 @@ Napi::Value DeleteKey(const Napi::CallbackInfo& info) {
     return queue(
         info.Env(), [keyId] { store().remove(keyId); },
         [](Napi::Env env) -> Napi::Value { return env.Undefined(); });
+}
+
+Napi::Array chainToJs(Napi::Env env, const std::vector<Bytes>& chain) {
+    Napi::Array out = Napi::Array::New(env, chain.size());
+    for (size_t i = 0; i < chain.size(); i++) out.Set(i, toBuffer(env, chain[i]));
+    return out;
+}
+
+void setContents(Napi::Object o, const ks::Pkcs12Contents& contents) {
+    o.Set("chain", chainToJs(o.Env(), contents.chain));
+    o.Set("algorithm", algorithmName(contents.algorithm));
+    o.Set("keyBits", contents.keyBits);
+}
+
+// The file and its password (pkcs12-key-storage-plan.md §5.1). The private
+// key never comes back to JS; only certificates and the public key do.
+Bytes requirePkcs12(const Napi::Value& value) {
+    if (!value.IsBuffer()) throw Napi::TypeError::New(value.Env(), "data must be a Buffer");
+    auto buf = value.As<Napi::Buffer<uint8_t>>();
+    if (buf.Length() == 0 || buf.Length() > ks::kMaxPkcs12Size) {
+        Napi::Error err = Napi::Error::New(value.Env(), "the file is empty or larger than 64 KB");
+        err.Set("code", "E_BAD_FILE");
+        throw err;
+    }
+    return Bytes(buf.Data(), buf.Data() + buf.Length());
+}
+
+std::string requirePassword(const Napi::Value& value) {
+    if (!value.IsString()) throw Napi::TypeError::New(value.Env(), "password must be a string");
+    return value.As<Napi::String>().Utf8Value();
+}
+
+Napi::Value InspectPkcs12(const Napi::CallbackInfo& info) {
+    auto data = std::make_shared<Bytes>(requirePkcs12(info[0]));
+    auto password = std::make_shared<std::string>(requirePassword(info[1]));
+    auto result = std::make_shared<ks::Pkcs12Contents>();
+    return queue(
+        info.Env(),
+        [data, password, result] {
+            struct Wipe {
+                std::shared_ptr<std::string> p;
+                ~Wipe() { ks::secureZero(*p); }
+            } wipe{password};
+            *result = store().inspectPkcs12(*data, *password);
+        },
+        [result](Napi::Env env) -> Napi::Value {
+            Napi::Object o = Napi::Object::New(env);
+            setContents(o, *result);
+            return o;
+        });
+}
+
+Napi::Value ImportPkcs12(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (!info[0].IsObject()) throw Napi::TypeError::New(env, "importPkcs12 expects an options object");
+    Napi::Object o = info[0].As<Napi::Object>();
+    auto opts = std::make_shared<ks::ImportOptions>();
+    opts->keyId = requireKeyId(o.Get("keyId"));
+    opts->data = requirePkcs12(o.Get("data"));
+    opts->password = requirePassword(o.Get("password"));
+    opts->requireUserPresence = o.Get("requireUserPresence").ToBoolean();
+    opts->biometryOnly = o.Has("biometryOnly") && o.Get("biometryOnly").ToBoolean();
+
+    auto result = std::make_shared<ks::ImportedCertificate>();
+    return queue(
+        env,
+        [opts, result] {
+            struct Wipe {
+                std::shared_ptr<ks::ImportOptions> o;
+                ~Wipe() { ks::secureZero(o->password); }
+            } wipe{opts};
+            *result = store().importPkcs12(*opts);
+        },
+        [result](Napi::Env env) -> Napi::Value {
+            Napi::Object out = Napi::Object::New(env);
+            setContents(out, result->contents);
+            out.Set("key", keyInfoToJs(env, result->key));
+            return out;
+        });
 }
 
 Napi::Value DeviceInfo(const Napi::CallbackInfo& info) {
@@ -286,6 +366,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("sign", Napi::Function::New(env, Sign));
     exports.Set("attest", Napi::Function::New(env, Attest));
     exports.Set("deleteKey", Napi::Function::New(env, DeleteKey));
+    exports.Set("inspectPkcs12", Napi::Function::New(env, InspectPkcs12));
+    exports.Set("importPkcs12", Napi::Function::New(env, ImportPkcs12));
     exports.Set("deviceInfo", Napi::Function::New(env, DeviceInfo));
     exports.Set("configure", Napi::Function::New(env, Configure));
     exports.Set("sealingAvailable", Napi::Function::New(env, SealingAvailable));
