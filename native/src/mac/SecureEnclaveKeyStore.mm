@@ -15,6 +15,11 @@
 //
 // Whether a keychain key requires presence can't be read back from its
 // SecAccessControl, so it's recorded in the item's label ("kukuxsign|presence=1").
+//
+// Keys imported from a .p12 (pkcs12-key-storage-plan.md §5.2) are sealed to a
+// Secure Enclave key that requires presence and kept as <keyId>.p12key. Without
+// a Secure Enclave (or with the software backend) they go to the legacy
+// keychain, non-extractable, like route 4.
 
 #import <Foundation/Foundation.h>
 #import <LocalAuthentication/LocalAuthentication.h>
@@ -29,6 +34,7 @@
 #include <mutex>
 
 #include "../common/encoding.h"
+#include "Pkcs12.h"
 #include "keystore.h"
 
 // SecureEnclaveBlob.swift. Buffers returned through out-parameters are
@@ -45,6 +51,12 @@ int32_t kse_seal(const uint8_t* blob, long blobLen, const uint8_t* plain, long p
                  char* err, long errSize);
 int32_t kse_open(const uint8_t* blob, long blobLen, const uint8_t* sealed, long sealedLen, uint8_t** out, long* outLen,
                  char* err, long errSize);
+int32_t kse_wrap_key_create(bool requirePresence, bool biometryOnly, uint8_t** blob, long* blobLen, char* err,
+                            long errSize);
+int32_t kse_wrap(const uint8_t* blob, long blobLen, const uint8_t* plain, long plainLen, uint8_t** out, long* outLen,
+                 char* err, long errSize);
+int32_t kse_unwrap(const uint8_t* blob, long blobLen, const uint8_t* sealed, long sealedLen, const char* reason,
+                   uint8_t** out, long* outLen, char* err, long errSize);
 void kse_free(void* pointer);
 }
 
@@ -120,7 +132,7 @@ std::optional<BlobKey> readBlob(const std::string& keyId) {
     return BlobKey{Bytes(raw.begin() + 5, raw.end()), raw[4] == 1};
 }
 
-void writeBlob(const std::string& keyId, const BlobKey& key) {
+void ensureKeyDirectory() {
     @autoreleasepool {
         NSString* dir = [NSString stringWithUTF8String:keyDirectory().c_str()];
         NSError* error = nil;
@@ -132,6 +144,10 @@ void writeBlob(const std::string& keyId, const BlobKey& key) {
                                                  error.localizedDescription.UTF8String);
         }
     }
+}
+
+void writeBlob(const std::string& keyId, const BlobKey& key) {
+    ensureKeyDirectory();
     const std::string path = blobPath(keyId);
     const std::string tmp = path + ".tmp";
     {
@@ -165,6 +181,160 @@ KeyInfo blobInfo(const std::string& keyId, const BlobKey& key) {
     return info;
 }
 
+// ── Imported certificate keys (.p12key files) ──
+//
+// <keyDirectory()>/<keyId>.p12key =
+//   "KP12" | version (1) | presence (1) | algorithm (0 = ES256, 1 = RS256)
+//   | u32 spki length | SPKI | u32 wrapping key length | SE wrapping key blob
+//   | sealed private key (kse_wrap)
+// The SPKI is public and kept in clear so find() never prompts.
+
+struct CertKey {
+    bool userPresence = false;
+    Algorithm algorithm = Algorithm::RS256;
+    Bytes spki;
+    Bytes wrappingKey;
+    Bytes sealed;
+};
+
+const char kCertMagic[4] = {'K', 'P', '1', '2'};
+
+std::string certPath(const std::string& keyId) {
+    return keyDirectory() + "/" + keyId + ".p12key";
+}
+
+void putU32(Bytes& out, size_t n) {
+    for (int shift = 24; shift >= 0; shift -= 8) out.push_back(static_cast<uint8_t>((n >> shift) & 0xff));
+}
+
+std::optional<CertKey> readCertKey(const std::string& keyId) {
+    std::ifstream in(certPath(keyId), std::ios::binary);
+    if (!in) return std::nullopt;
+    Bytes raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    auto corrupt = [&] { return Error(ErrorCode::Internal, "corrupt key file: " + certPath(keyId)); };
+    if (raw.size() < 15 || !std::equal(kCertMagic, kCertMagic + 4, raw.begin()) || raw[4] != 1) throw corrupt();
+    size_t pos = 7;
+    auto takeChunk = [&]() {
+        if (raw.size() < pos + 4) throw corrupt();
+        size_t n = (size_t(raw[pos]) << 24) | (size_t(raw[pos + 1]) << 16) | (size_t(raw[pos + 2]) << 8) | raw[pos + 3];
+        pos += 4;
+        if (raw.size() < pos + n) throw corrupt();
+        Bytes chunk(raw.begin() + pos, raw.begin() + pos + n);
+        pos += n;
+        return chunk;
+    };
+    CertKey key;
+    key.userPresence = raw[5] == 1;
+    key.algorithm = raw[6] == 0 ? Algorithm::ES256 : Algorithm::RS256;
+    key.spki = takeChunk();
+    key.wrappingKey = takeChunk();
+    key.sealed = Bytes(raw.begin() + pos, raw.end());
+    if (key.sealed.empty()) throw corrupt();
+    return key;
+}
+
+void writeCertKey(const std::string& keyId, const CertKey& key) {
+    Bytes body;
+    body.insert(body.end(), kCertMagic, kCertMagic + 4);
+    body.push_back(1);
+    body.push_back(key.userPresence ? 1 : 0);
+    body.push_back(key.algorithm == Algorithm::ES256 ? 0 : 1);
+    putU32(body, key.spki.size());
+    body.insert(body.end(), key.spki.begin(), key.spki.end());
+    putU32(body, key.wrappingKey.size());
+    body.insert(body.end(), key.wrappingKey.begin(), key.wrappingKey.end());
+    body.insert(body.end(), key.sealed.begin(), key.sealed.end());
+
+    ensureKeyDirectory();
+    const std::string path = certPath(keyId);
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) throw Error(ErrorCode::Internal, "could not write " + tmp);
+        chmod(tmp.c_str(), 0600);
+        out.write(reinterpret_cast<const char*>(body.data()), static_cast<std::streamsize>(body.size()));
+        if (!out) throw Error(ErrorCode::Internal, "could not write " + tmp);
+    }
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        std::remove(tmp.c_str());
+        throw Error(ErrorCode::Internal, "could not write " + path);
+    }
+}
+
+KeyInfo certKeyInfo(const std::string& keyId, const CertKey& key) {
+    KeyInfo info;
+    info.keyId = keyId;
+    info.algorithm = key.algorithm;
+    info.spki = key.spki;
+    info.protection = Protection::Software;  // the key is software; the Secure Enclave guards it at rest
+    info.userPresence = key.userPresence;
+    return info;
+}
+
+SecKeyRef privateKeyFromData(const Bytes& raw, Algorithm algorithm) {
+    NSDictionary* attrs = @{
+        (id)kSecAttrKeyType : algorithm == Algorithm::RS256 ? (id)kSecAttrKeyTypeRSA : (id)kSecAttrKeyTypeECSECPrimeRandom,
+        (id)kSecAttrKeyClass : (id)kSecAttrKeyClassPrivate,
+    };
+    CFErrorRef error = nullptr;
+    SecKeyRef key = SecKeyCreateWithData((__bridge CFDataRef)[NSData dataWithBytesNoCopy:const_cast<uint8_t*>(raw.data())
+                                                                                   length:raw.size()
+                                                                             freeWhenDone:NO],
+                                         (__bridge CFDictionaryRef)attrs, &error);
+    if (key == nullptr) {
+        std::string msg = describe(error);
+        if (error) CFRelease(error);
+        throw Error(ErrorCode::Internal, "could not load the private key: " + msg);
+    }
+    return key;
+}
+
+SecKeyAlgorithm signingAlgorithm(Algorithm algorithm) {
+    // Both hash the message with SHA-256. ECDSA returns X9.62 DER, RSA PKCS#1 v1.5.
+    return algorithm == Algorithm::RS256 ? kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256
+                                         : kSecKeyAlgorithmECDSASignatureMessageX962SHA256;
+}
+
+Bytes signWith(SecKeyRef key, Algorithm algorithm, const Bytes& message) {
+    CFErrorRef error = nullptr;
+    CFDataRef sig = SecKeyCreateSignature(key, signingAlgorithm(algorithm), (__bridge CFDataRef)toNSData(message), &error);
+    if (sig == nullptr) {
+        const bool cancelled = isCancellation(error);
+        std::string msg = describe(error);
+        if (error) CFRelease(error);
+        throw Error(cancelled ? ErrorCode::Cancelled : ErrorCode::Internal, msg);
+    }
+    Bytes out = toBytes(sig);
+    CFRelease(sig);
+    return out;
+}
+
+Bytes signCertKey(const CertKey& key, const Bytes& message, const std::string& reason) {
+    uint8_t* plain = nullptr;
+    long plainLen = 0;
+    char err[512] = {0};
+    const int32_t status = kse_unwrap(key.wrappingKey.data(), static_cast<long>(key.wrappingKey.size()), key.sealed.data(),
+                                      static_cast<long>(key.sealed.size()), reason.c_str(), &plain, &plainLen, err, sizeof err);
+    if (status == kKseCancelled) throw Error(ErrorCode::Cancelled, err);
+    if (status != kKseOk) throw Error(ErrorCode::Internal, std::string("could not unlock the certificate key: ") + err);
+    Bytes raw(plain, plain + plainLen);
+    secureZero(plain, static_cast<size_t>(plainLen));
+    kse_free(plain);
+
+    SecKeyRef secKey = nullptr;
+    try {
+        secKey = privateKeyFromData(raw, key.algorithm);
+        secureZero(raw);
+        Bytes signature = signWith(secKey, key.algorithm, message);
+        CFRelease(secKey);
+        return signature;
+    } catch (...) {
+        secureZero(raw);
+        if (secKey) CFRelease(secKey);
+        throw;
+    }
+}
+
 struct Found {
     SecKeyRef key = nullptr;  // +1, released by the owner
     bool secureEnclave = false;
@@ -188,7 +358,10 @@ public:
     Capabilities capabilities() override {
         @autoreleasepool {
             Capabilities caps;
-            if (backend_ == Backend::Software) return caps;
+            if (backend_ == Backend::Software) {
+                caps.pkcs12 = mac::pkcs12Supported();
+                return caps;
+            }
             // Either route to the Secure Enclave counts: the keychain (signed
             // builds) or SE blobs (any build).
             caps.hardware = kse_available() || (dataProtectionAvailable() && secureEnclavePresent());
@@ -196,15 +369,14 @@ public:
             caps.userPresence = (caps.hardware || dataProtectionAvailable()) &&
                                 [ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthentication error:nil];
             caps.attestation = false;  // no third-party SE attestation for macOS apps (§5.5)
+            caps.pkcs12 = mac::pkcs12Supported();
             return caps;
         }
     }
 
     KeyInfo create(const CreateOptions& opts) override {
         @autoreleasepool {
-            if (lookup(opts.keyId, nil) || (backend_ == Backend::Auto && readBlob(opts.keyId))) {
-                throw Error(ErrorCode::Exists, "a key with this id already exists");
-            }
+            if (exists(opts.keyId)) throw Error(ErrorCode::Exists, "a key with this id already exists");
 
             std::string lastError;
             if (backend_ == Backend::Auto) {
@@ -225,6 +397,7 @@ public:
             if (auto found = lookup(keyId, nil)) return infoFor(keyId, *found);
             if (backend_ == Backend::Auto) {
                 if (auto blob = readBlob(keyId)) return blobInfo(keyId, *blob);
+                if (auto cert = readCertKey(keyId)) return certKeyInfo(keyId, *cert);
             }
             return std::nullopt;
         }
@@ -239,25 +412,13 @@ public:
             if (!found) {
                 if (backend_ == Backend::Auto) {
                     if (auto blob = readBlob(keyId)) return signBlob(*blob, message, reason);
+                    if (auto cert = readCertKey(keyId)) return signCertKey(*cert, message, reason);
                 }
                 throw Error(ErrorCode::NotFound, "key not found");
             }
-
-            CFErrorRef error = nullptr;
-            // Hashes with SHA-256 and returns an X9.62 DER signature, which
-            // openssl_verify accepts as-is.
-            CFDataRef sig = SecKeyCreateSignature(found->key,
-                                                  kSecKeyAlgorithmECDSASignatureMessageX962SHA256,
-                                                  (__bridge CFDataRef)toNSData(message), &error);
-            if (sig == nullptr) {
-                const bool cancelled = isCancellation(error);
-                std::string msg = describe(error);
-                if (error) CFRelease(error);
-                throw Error(cancelled ? ErrorCode::Cancelled : ErrorCode::Internal, msg);
-            }
-            Bytes out = toBytes(sig);
-            CFRelease(sig);
-            return out;
+            // SHA-256 of the message; ECDSA comes back as X9.62 DER, which
+            // openssl_verify accepts as-is. RSA (imported keys) is PKCS#1 v1.5.
+            return signWith(found->key, mac::algorithmForKey(found->key), message);
         }
     }
 
@@ -281,6 +442,31 @@ public:
                 }
             }
             std::remove(blobPath(keyId).c_str());
+            std::remove(certPath(keyId).c_str());
+        }
+    }
+
+    Pkcs12Contents inspectPkcs12(const Bytes& data, const std::string& password) override {
+        return mac::parsePkcs12(data, password, /*withKey=*/false).contents;
+    }
+
+    ImportedCertificate importPkcs12(const ImportOptions& opts) override {
+        @autoreleasepool {
+            if (exists(opts.keyId)) throw Error(ErrorCode::Exists, "a key with this id already exists");
+            mac::ParsedPkcs12 parsed = mac::parsePkcs12(opts.data, opts.password, /*withKey=*/true);
+
+            ImportedCertificate result;
+            result.contents = parsed.contents;
+            if (backend_ == Backend::Auto && kse_available()) {
+                result.key = importSealed(opts, parsed);
+            } else {
+                result.key = importToKeychain(opts.keyId, parsed);
+            }
+            if (result.key.spki != parsed.spki) {
+                remove(opts.keyId);
+                throw Error(ErrorCode::Internal, "the imported key doesn't match the certificate");
+            }
+            return result;
         }
     }
 
@@ -291,6 +477,8 @@ public:
                 // An SE blob is wrapped by the Secure Enclave; the private key
                 // itself never exists outside the chip.
                 if (backend_ == Backend::Auto && readBlob(keyId)) return false;
+                // A .p12key holds the key sealed to the Secure Enclave; nothing exports it.
+                if (backend_ == Backend::Auto && readCertKey(keyId)) return false;
                 throw Error(ErrorCode::NotFound, "key not found");
             }
             CFDataRef data = SecKeyCopyExternalRepresentation(found->key, nullptr);
@@ -302,6 +490,65 @@ public:
 
 private:
     Backend backend_;
+
+    bool exists(const std::string& keyId) {
+        return lookup(keyId, nil) || (backend_ == Backend::Auto && (readBlob(keyId) || readCertKey(keyId)));
+    }
+
+    // Seals the key to a new Secure Enclave wrapping key (§5.2). No prompt:
+    // sealing only needs the wrapping key's public half.
+    KeyInfo importSealed(const ImportOptions& opts, const mac::ParsedPkcs12& parsed) {
+        uint8_t* blob = nullptr;
+        long blobLen = 0;
+        char err[512] = {0};
+        int32_t status = kse_wrap_key_create(opts.requireUserPresence, opts.biometryOnly, &blob, &blobLen, err, sizeof err);
+        if (status == kKseCancelled) throw Error(ErrorCode::Cancelled, err);
+        if (status != kKseOk) throw Error(ErrorCode::Internal, std::string("could not create the wrapping key: ") + err);
+
+        CertKey key;
+        key.userPresence = opts.requireUserPresence;
+        key.algorithm = parsed.contents.algorithm;
+        key.spki = parsed.spki;
+        key.wrappingKey = takeBuffer(blob, blobLen);
+
+        uint8_t* sealed = nullptr;
+        long sealedLen = 0;
+        if (kse_wrap(key.wrappingKey.data(), static_cast<long>(key.wrappingKey.size()), parsed.privateKey.data(),
+                     static_cast<long>(parsed.privateKey.size()), &sealed, &sealedLen, err, sizeof err) != kKseOk) {
+            throw Error(ErrorCode::Internal, std::string("could not seal the certificate key: ") + err);
+        }
+        key.sealed = takeBuffer(sealed, sealedLen);
+        writeCertKey(opts.keyId, key);
+        return certKeyInfo(opts.keyId, key);
+    }
+
+    // No Secure Enclave (or the software backend): a non-extractable key in the
+    // legacy keychain. It can't carry an access control, so no presence.
+    // The legacy keychain rejects P-256 keys made with SecKeyCreateWithData
+    // (errSecInvalidItemRef), so only RSA goes this way; PNPKI keys are RSA.
+    KeyInfo importToKeychain(const std::string& keyId, const mac::ParsedPkcs12& parsed) {
+        if (parsed.contents.algorithm != Algorithm::RS256) {
+            throw Error(ErrorCode::Unsupported, "P-256 certificates need a Mac with a Secure Enclave");
+        }
+        SecKeyRef key = privateKeyFromData(parsed.privateKey, parsed.contents.algorithm);
+        NSDictionary* item = @{
+            (id)kSecClass : (id)kSecClassKey,
+            (id)kSecValueRef : (__bridge id)key,
+            (id)kSecAttrApplicationTag : tagFor(keyId),
+            (id)kSecAttrLabel : kLabelAbsent,
+            (id)kSecAttrIsExtractable : @NO,
+            (id)kSecAttrIsPermanent : @YES,
+            (id)kSecUseDataProtectionKeychain : @NO,
+        };
+        OSStatus status = SecItemAdd((__bridge CFDictionaryRef)item, nullptr);
+        CFRelease(key);
+        if (status != errSecSuccess) {
+            throw Error(ErrorCode::Internal, "could not add the key to the keychain (OSStatus " + std::to_string(status) + ")");
+        }
+        auto found = lookup(keyId, nil);
+        if (!found) throw Error(ErrorCode::Internal, "key was imported but can't be found");
+        return infoFor(keyId, *found);
+    }
 
     std::optional<bool> dataProtection_;
 
@@ -381,20 +628,17 @@ private:
     KeyInfo infoFor(const std::string& keyId, const Found& found) {
         SecKeyRef pub = SecKeyCopyPublicKey(found.key);
         if (pub == nullptr) throw Error(ErrorCode::Internal, "could not derive the public key");
-        CFErrorRef error = nullptr;
-        // Raw X9.63 point (04 || X || Y), wrapped in SPKI below (§5.3).
-        CFDataRef point = SecKeyCopyExternalRepresentation(pub, &error);
-        CFRelease(pub);
-        if (point == nullptr) {
-            std::string msg = describe(error);
-            if (error) CFRelease(error);
-            throw Error(ErrorCode::Internal, msg);
-        }
         KeyInfo info;
         info.keyId = keyId;
-        info.algorithm = Algorithm::ES256;
-        info.spki = p256SpkiFromX963(toBytes(point));
-        CFRelease(point);
+        try {
+            // P-256 for created keys; RSA too for keys imported from a .p12 (§5.3).
+            info.algorithm = mac::algorithmForKey(pub);
+            info.spki = mac::spkiForPublicKey(pub);
+        } catch (...) {
+            CFRelease(pub);
+            throw;
+        }
+        CFRelease(pub);
         info.protection = found.secureEnclave ? Protection::SecureEnclave : Protection::Software;
         info.userPresence = found.userPresence;
         return info;
