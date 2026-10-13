@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
-import type { PairingProgressView, PairingResult, ServerView } from '../../shared/ipc';
+import type { KeySourceView, PairingProgressView, PairingResult, ServerView } from '../../shared/ipc';
 import { IconButton } from '../icons';
+import { currentPlatform } from '../labels';
 import { OfflinePrompt, useUnpair } from '../unpair';
 
 interface Props {
@@ -166,8 +167,17 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
         {progress && running && progress.stage === 'already_paired_locally' ? (
           <div className="warning small" role="alertdialog" aria-label="Already paired">
             <p>
-              Your {progress.serverName} signature is already on this computer
-              {progress.userName ? ` (${progress.userName})` : ''}. Re-pair it with new keys?
+              {progress.from === progress.to ? (
+                <>
+                  Your {progress.serverName} signature is already on this computer
+                  {progress.userName ? ` (${progress.userName})` : ''}. Re-pair it with new keys?
+                </>
+              ) : (
+                <>
+                  {progress.serverName} is paired with {storageWords(progress.from)}
+                  {progress.userName ? ` (${progress.userName})` : ''}. Re-pair it with {storageWords(progress.to)}?
+                </>
+              )}
             </p>
             <div className="actions">
               <IconButton icon="x" label="Keep the current pairing" tip="above" onClick={() => void window.agent.confirmRepair(false)} />
@@ -195,7 +205,7 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
                 onClick={() => void unpair(failure.serverId!)}
               />
             )}
-            {failure.code === 'account_already_paired' && failure.manageUrl && (
+            {(failure.code === 'account_already_paired' || failure.code === 'certificate_in_use') && failure.manageUrl && (
               <IconButton
                 icon="external"
                 label="Open signing devices"
@@ -218,6 +228,11 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
       </form>
     </main>
   );
+}
+
+function storageWords(source: KeySourceView): string {
+  if (source === 'pkcs12') return 'your certificate';
+  return currentPlatform() === 'windows' ? 'the TPM' : 'the Secure Enclave';
 }
 
 function ProgressLine({ progress }: { progress: PairingProgressView }) {
