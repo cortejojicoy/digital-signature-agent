@@ -2,14 +2,21 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import type { KeySource } from './keystore';
 import { readJson, writeJsonAtomic } from './store';
 
 export interface Settings {
   /** Allow plain http:// to local-network apps, for testing (protocol.ts). */
   developerMode: boolean;
+  /**
+   * Where new pairings' signing keys live, chosen on first launch
+   * (pkcs12-key-storage-plan.md §6.1). null until the user chooses.
+   */
+  keyStorage: KeySource | null;
 }
 
-const DEFAULTS: Settings = { developerMode: false };
+const DEFAULTS: Settings = { developerMode: false, keyStorage: null };
+const KEY_STORAGES: ReadonlySet<unknown> = new Set(['platform', 'pkcs12']);
 
 export class SettingsStore {
   private current: Settings = { ...DEFAULTS };
@@ -18,7 +25,10 @@ export class SettingsStore {
 
   async load(): Promise<Settings> {
     const saved = await readJson<Partial<Settings>>(this.file());
-    this.current = { developerMode: saved?.developerMode === true };
+    this.current = {
+      developerMode: saved?.developerMode === true,
+      keyStorage: KEY_STORAGES.has(saved?.keyStorage) ? (saved!.keyStorage as KeySource) : null,
+    };
     return this.get();
   }
 
