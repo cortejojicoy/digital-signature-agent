@@ -42,6 +42,10 @@ struct Cert {
 struct Key {
     NCRYPT_KEY_HANDLE h = 0;
     bool owned = false;
+    Key() = default;
+    Key(const Key&) = delete;
+    Key& operator=(const Key&) = delete;
+    Key(Key&& o) noexcept : h(o.h), owned(o.owned) { o.h = 0; }
     ~Key() {
         if (h && owned) NCryptFreeObject(h);
     }
@@ -163,6 +167,69 @@ Bytes certSpki(PCCERT_CONTEXT cert) {
     return out;
 }
 
+bool hasProperty(PCCERT_CONTEXT cert, DWORD property) {
+    DWORD size = 0;
+    return CertGetCertificateContextProperty(cert, property, nullptr, &size) != FALSE;
+}
+
+bool hasKeyProperty(PCCERT_CONTEXT cert) {
+    return hasProperty(cert, CERT_NCRYPT_KEY_HANDLE_PROP_ID) || hasProperty(cert, CERT_KEY_PROV_INFO_PROP_ID);
+}
+
+// With PKCS12_NO_PERSIST_KEY the key lives only in memory, attached to the
+// certificate as CERT_NCRYPT_KEY_HANDLE_PROP_ID: read that first (the
+// certificate context owns it). Otherwise ask CryptAcquireCertificatePrivateKey.
+Key openKey(PCCERT_CONTEXT cert) {
+    Key key;
+    NCRYPT_KEY_HANDLE handle = 0;
+    DWORD size = sizeof(handle);
+    if (CertGetCertificateContextProperty(cert, CERT_NCRYPT_KEY_HANDLE_PROP_ID, &handle, &size) && handle) {
+        key.h = handle;
+        key.owned = false;
+        return key;
+    }
+    HCRYPTPROV_OR_NCRYPT_KEY_HANDLE acquired = 0;
+    DWORD spec = 0;
+    BOOL mustFree = FALSE;
+    if (!CryptAcquireCertificatePrivateKey(cert, CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG | CRYPT_ACQUIRE_SILENT_FLAG, nullptr,
+                                           &acquired, &spec, &mustFree)) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "could not open the file's private key (0x%08lx)",
+                      static_cast<unsigned long>(GetLastError()));
+        throw Error(ErrorCode::BadFile, buf);
+    }
+    key.h = acquired;
+    key.owned = mustFree == TRUE;
+    return key;
+}
+
+// SubjectPublicKeyInfo of a CNG key, in the same encoding as certSpki.
+Bytes keySpki(NCRYPT_KEY_HANDLE key, Algorithm algorithm) {
+    SECURITY_STATUS s = ERROR_SUCCESS;
+    if (algorithm == Algorithm::RS256) {
+        Bytes blob = exportBlob(key, BCRYPT_RSAPUBLIC_BLOB, nullptr, &s);
+        if (s != ERROR_SUCCESS) fail("NCryptExportKey (RSA public)", s);
+        auto* header = reinterpret_cast<const BCRYPT_RSAKEY_BLOB*>(blob.data());
+        if (blob.size() < sizeof(BCRYPT_RSAKEY_BLOB) ||
+            blob.size() < sizeof(BCRYPT_RSAKEY_BLOB) + header->cbPublicExp + header->cbModulus) {
+            throw Error(ErrorCode::Internal, "unexpected RSA public key blob");
+        }
+        const uint8_t* exponent = blob.data() + sizeof(BCRYPT_RSAKEY_BLOB);
+        return rsaSpkiFromPkcs1(rsaPkcs1FromModExp(exponent + header->cbPublicExp, header->cbModulus, exponent,
+                                                   header->cbPublicExp));
+    }
+    Bytes blob = exportBlob(key, BCRYPT_ECCPUBLIC_BLOB, nullptr, &s);
+    if (s != ERROR_SUCCESS) fail("NCryptExportKey (ECC public)", s);
+    auto* header = reinterpret_cast<const BCRYPT_ECCKEY_BLOB*>(blob.data());
+    if (blob.size() < sizeof(BCRYPT_ECCKEY_BLOB) || header->cbKey != 32 ||
+        blob.size() < sizeof(BCRYPT_ECCKEY_BLOB) + 64) {
+        throw Error(ErrorCode::Internal, "unexpected ECC public key blob");
+    }
+    Bytes point{0x04};
+    point.insert(point.end(), blob.data() + sizeof(BCRYPT_ECCKEY_BLOB), blob.data() + sizeof(BCRYPT_ECCKEY_BLOB) + 64);
+    return p256SpkiFromX963(point);
+}
+
 HCERTSTORE openPfx(const Bytes& data, const std::string& password) {
     CRYPT_DATA_BLOB pfx{static_cast<DWORD>(data.size()), const_cast<BYTE*>(data.data())};
     if (!PFXIsPFXBlob(&pfx)) throw Error(ErrorCode::BadFile, "this isn't a PKCS#12 file");
@@ -198,28 +265,21 @@ ParsedPkcs12 parsePkcs12(const Bytes& data, const std::string& password, bool wi
     Store store;
     store.h = openPfx(data, password);
 
+    // Only the certificate the file pairs with a key carries a key property;
+    // the rest are its issuers.
     Cert leaf;
-    Key key;
     std::vector<Bytes> others;
     for (PCCERT_CONTEXT cert = CertEnumCertificatesInStore(store.h, nullptr); cert != nullptr;
          cert = CertEnumCertificatesInStore(store.h, cert)) {
-        HCRYPTPROV_OR_NCRYPT_KEY_HANDLE handle = 0;
-        DWORD spec = 0;
-        BOOL mustFree = FALSE;
-        const DWORD acquire = CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG | CRYPT_ACQUIRE_SILENT_FLAG | CRYPT_ACQUIRE_COMPARE_KEY_FLAG;
-        if (CryptAcquireCertificatePrivateKey(cert, acquire, nullptr, &handle, &spec, &mustFree)) {
-            if (leaf.c != nullptr) {
-                if (mustFree) NCryptFreeObject(handle);
-                throw Error(ErrorCode::BadFile, "the file holds more than one private key");
-            }
+        if (hasKeyProperty(cert)) {
+            if (leaf.c != nullptr) throw Error(ErrorCode::BadFile, "the file holds more than one private key");
             leaf.c = CertDuplicateCertificateContext(cert);
-            key.h = handle;
-            key.owned = mustFree == TRUE;
         } else {
             others.emplace_back(cert->pbCertEncoded, cert->pbCertEncoded + cert->cbCertEncoded);
         }
     }
     if (leaf.c == nullptr) throw Error(ErrorCode::BadFile, "the file has no private key");
+    Key key = openKey(leaf.c);
 
     ParsedPkcs12 parsed;
     parsed.contents.chain.emplace_back(leaf.c->pbCertEncoded, leaf.c->pbCertEncoded + leaf.c->cbCertEncoded);
@@ -238,6 +298,11 @@ ParsedPkcs12 parsePkcs12(const Bytes& data, const std::string& password, bool wi
         parsed.blobType = BCRYPT_ECCPRIVATE_BLOB;
     } else {
         throw Error(ErrorCode::Unsupported, "only RSA (2048 bits or more) and P-256 keys are supported");
+    }
+
+    // The OS pairs key and certificate by itself; check anyway, as on macOS.
+    if (keySpki(key.h, parsed.contents.algorithm) != parsed.spki) {
+        throw Error(ErrorCode::KeyMismatch, "the private key doesn't match the certificate");
     }
 
     if (withKey) {

@@ -1,0 +1,5 @@
+# Certificates and keys are bytes, never text: no line-ending conversion.
+*.p12 binary
+*.pfx binary
+*.cer binary
+*.der binary
