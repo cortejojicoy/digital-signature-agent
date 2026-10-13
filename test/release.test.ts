@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -75,10 +75,25 @@ describe('SettingsStore', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'settings-'));
     try {
       const settings = new SettingsStore(dir);
-      expect(await settings.load()).toEqual({ developerMode: false });
+      expect(await settings.load()).toEqual({ developerMode: false, keyStorage: null });
       await settings.update({ developerMode: true });
-      expect(JSON.parse(await readFile(path.join(dir, 'settings.json'), 'utf8'))).toEqual({ developerMode: true });
-      expect(await new SettingsStore(dir).load()).toEqual({ developerMode: true });
+      expect(JSON.parse(await readFile(path.join(dir, 'settings.json'), 'utf8'))).toEqual({ developerMode: true, keyStorage: null });
+      expect(await new SettingsStore(dir).load()).toEqual({ developerMode: true, keyStorage: null });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('remembers the key storage choice and ignores values it does not know', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'settings-'));
+    try {
+      const settings = new SettingsStore(dir);
+      await settings.load();
+      await settings.update({ keyStorage: 'pkcs12' });
+      expect((await new SettingsStore(dir).load()).keyStorage).toBe('pkcs12');
+
+      await writeFile(path.join(dir, 'settings.json'), JSON.stringify({ keyStorage: 'usb-token' }));
+      expect((await new SettingsStore(dir).load()).keyStorage).toBeNull();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

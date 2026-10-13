@@ -1,8 +1,34 @@
 // Software KeyStore for tests: same contract as native/keystore.node (DER
 // ECDSA, PKCS#1 v1.5 RSA, SPKI DER), backed by node:crypto.
-import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { X509Certificate, createHash, createPrivateKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
-import type { DeviceInfo, KeyInfo, KeyStore, Protection } from '../../src/main/keystore';
+import type { DeviceInfo, ImportedCertificate, KeyInfo, KeyStore, Pkcs12Contents, Protection } from '../../src/main/keystore';
+
+/**
+ * A .p12 the memory store "can open". node:crypto can't parse PKCS#12, so
+ * tests register the file's bytes with the parts it holds.
+ */
+export interface FakePkcs12 {
+  data: Buffer;
+  password: string;
+  chain: Buffer[];
+  privateKey: KeyObject;
+}
+
+/** One of scripts/make-pkcs12-fixtures.sh's files, with its parts. */
+export function fixturePkcs12(name: 'rsa2048-aes' | 'second'): FakePkcs12 {
+  const dir = path.join(__dirname, '..', 'fixtures', 'pkcs12');
+  const read = (file: string) => readFileSync(path.join(dir, file));
+  const leaf = name === 'second' ? 'second-leaf' : 'rsa2048-leaf';
+  return {
+    data: read(`${name === 'second' ? 'second' : 'rsa2048-aes'}.p12`),
+    password: 'test',
+    chain: [read(`${leaf}.cer`), read('test-intermediate.cer'), read('test-root.cer')],
+    privateKey: createPrivateKey(read(`${leaf}.key`)),
+  };
+}
 
 interface Entry {
   info: KeyInfo;
@@ -17,6 +43,10 @@ export interface MemoryKeyStoreOptions {
   rsaIdentity?: boolean;
   /** Overrides for what deviceInfo() reports, e.g. a VM or a Windows machine. */
   device?: Partial<DeviceInfo> & { hardwareUuid?: string };
+  /** Files inspectPkcs12 / importPkcs12 can open. */
+  pkcs12?: FakePkcs12[];
+  /** capabilities().pkcs12; true by default. */
+  pkcs12Supported?: boolean;
 }
 
 export class MemoryKeyStore implements KeyStore {
@@ -32,7 +62,34 @@ export class MemoryKeyStore implements KeyStore {
       hardware: this.options.protection !== 'software',
       userPresence: this.options.presence ?? true,
       attestation: false,
+      pkcs12: this.options.pkcs12Supported ?? true,
     };
+  }
+
+  async inspectPkcs12(data: Buffer, password: string): Promise<Pkcs12Contents> {
+    const file = this.openPkcs12(data, password);
+    return { chain: [...file.chain], algorithm: 'RS256', keyBits: 2048 };
+  }
+
+  async importPkcs12(o: { keyId: string; data: Buffer; password: string; requireUserPresence: boolean }): Promise<ImportedCertificate> {
+    const file = this.openPkcs12(o.data, o.password);
+    if (this.keys.has(o.keyId)) throw Object.assign(new Error('exists'), { code: 'E_EXISTS' });
+    const info: KeyInfo = {
+      keyId: o.keyId,
+      algorithm: 'RS256',
+      spki: new X509Certificate(file.chain[0]).publicKey.export({ format: 'der', type: 'spki' }),
+      protection: 'software',
+      userPresence: o.requireUserPresence && (this.options.presence ?? true),
+    };
+    this.keys.set(o.keyId, { info, privateKey: file.privateKey });
+    return { chain: [...file.chain], algorithm: 'RS256', keyBits: 2048, key: { ...info } };
+  }
+
+  private openPkcs12(data: Buffer, password: string): FakePkcs12 {
+    const file = (this.options.pkcs12 ?? []).find((f) => f.data.equals(data));
+    if (!file) throw Object.assign(new Error('not PKCS#12'), { code: 'E_BAD_FILE' });
+    if (file.password !== password) throw Object.assign(new Error('wrong password'), { code: 'E_BAD_PASSWORD' });
+    return file;
   }
 
   async createKey(o: { keyId: string; requireUserPresence: boolean }): Promise<KeyInfo> {
