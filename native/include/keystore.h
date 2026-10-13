@@ -28,6 +28,7 @@ struct Capabilities {
     bool hardware = false;      // a hardware-backed store is usable
     bool userPresence = false;  // OS-enforced Touch ID / Hello / password on use
     bool attestation = false;   // keys can carry a third-party attestation
+    bool pkcs12 = false;        // importPkcs12 works here (macOS 15+, Windows)
 };
 
 struct KeyInfo {
@@ -45,6 +46,28 @@ struct CreateOptions {
     // instead of "biometrics or login password".
     bool biometryOnly = false;
 };
+
+// A PKCS#12 (.p12 / .pfx) file's public contents (pkcs12-key-storage-plan.md §5.1).
+struct Pkcs12Contents {
+    std::vector<Bytes> chain;   // DER, the private key's certificate first
+    Algorithm algorithm = Algorithm::RS256;
+    int keyBits = 0;
+};
+
+struct ImportOptions {
+    std::string keyId;
+    Bytes data;                 // the file, at most kMaxPkcs12Size bytes
+    std::string password;
+    bool requireUserPresence = true;
+    bool biometryOnly = false;  // macOS, as in CreateOptions
+};
+
+struct ImportedCertificate {
+    Pkcs12Contents contents;
+    KeyInfo key;                // key.spki == the first certificate's SPKI
+};
+
+constexpr size_t kMaxPkcs12Size = 64 * 1024;
 
 struct Attestation {
     std::string format;         // e.g. "windows-hello-tpm"
@@ -71,6 +94,9 @@ enum class ErrorCode {
     Cancelled,      // E_CANCELLED   user dismissed the OS prompt
     Unsupported,    // E_UNSUPPORTED
     Internal,       // E_INTERNAL
+    BadPassword,    // E_BAD_PASSWORD  the PKCS#12 password is wrong
+    BadFile,        // E_BAD_FILE      not PKCS#12, or not exactly one private key
+    KeyMismatch,    // E_KEY_MISMATCH  the private key isn't the certificate's
 };
 
 class Error : public std::runtime_error {
@@ -96,6 +122,12 @@ public:
                        void* parentWindow) = 0;    // HWND on Windows, unused on macOS
     virtual std::optional<Attestation> attest(const std::string& keyId) = 0;
     virtual void remove(const std::string& keyId) = 0;
+
+    // Opens a PKCS#12 file and returns its certificates. Persists nothing.
+    virtual Pkcs12Contents inspectPkcs12(const Bytes& data, const std::string& password) = 0;
+    // Imports the file's private key under opts.keyId, never exportable.
+    // sign / find / remove / privateKeyExportable then work on it as on any key.
+    virtual ImportedCertificate importPkcs12(const ImportOptions& opts) = 0;
 
     // Test hook: true if the private key can be exported. Must always be false.
     virtual bool privateKeyExportable(const std::string& keyId) = 0;
