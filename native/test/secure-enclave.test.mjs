@@ -3,8 +3,8 @@
 // Enclave (CI VMs, Intel Macs without T2, Windows). No key here requires
 // presence, so no Touch ID / password prompt appears.
 import assert from 'node:assert/strict';
-import { createPublicKey, randomBytes, verify } from 'node:crypto';
-import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { X509Certificate, createPublicKey, randomBytes, verify } from 'node:crypto';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -91,4 +91,72 @@ test('seals and opens agent tokens with the Secure Enclave', async (t) => {
   tampered[tampered.length - 1] ^= 0x01;
   assert.throws(() => ks.openData(tampered), { code: 'E_INTERNAL' });
   assert.equal(statSync(path.join(dir, '_token-seal.sekey')).mode & 0o777, 0o600);
+});
+
+// Keys imported from a .p12 (pkcs12-key-storage-plan.md §5.2): sealed to a
+// Secure Enclave wrapping key, kept as <keyId>.p12key. With presence off, no prompt.
+const certKeyId = `ds.test.cert.${randomBytes(6).toString('hex')}`;
+const fixture = (name) => readFileSync(new URL(`../../test/fixtures/pkcs12/${name}`, import.meta.url));
+
+for (const [file, algorithm] of [
+  ['rsa2048-legacy.p12', 'RS256'],
+  ['p256.p12', 'ES256'],
+]) {
+  test(`imports ${file} sealed by the Secure Enclave, and signs`, async (t) => {
+    if (!hardware) return t.skip('no Secure Enclave available');
+    if (!(await ks.capabilities()).pkcs12) return t.skip('PKCS#12 import needs macOS 15');
+    const imported = await ks.importPkcs12({
+      keyId: certKeyId,
+      data: fixture(file),
+      password: 'test',
+      requireUserPresence: false,
+    });
+    try {
+      assert.equal(imported.key.protection, 'software');
+      assert.equal(imported.key.algorithm, algorithm);
+      const leafSpki = new X509Certificate(imported.chain[0]).publicKey.export({ format: 'der', type: 'spki' });
+      assert.deepEqual(imported.key.spki, leafSpki);
+
+      const sealedFile = path.join(dir, `${certKeyId}.p12key`);
+      assert.equal(statSync(sealedFile).mode & 0o777, 0o600);
+      assert.equal(await ks._probeExportable(certKeyId), false);
+
+      const found = await ks.findKey(certKeyId);
+      assert.deepEqual(found.spki, leafSpki);
+      assert.equal(found.userPresence, false);
+
+      const message = Buffer.from('v1|sign_receipt|bm9uY2U|42|' + 'cd'.repeat(32));
+      const signature = await ks.sign(certKeyId, message, 'run the certificate tests');
+      const key = createPublicKey({ key: leafSpki, format: 'der', type: 'spki' });
+      const ok =
+        algorithm === 'ES256'
+          ? verify('sha256', message, { key, dsaEncoding: 'der' }, signature)
+          : verify('sha256', message, key, signature);
+      assert.ok(ok);
+      await assert.rejects(
+        ks.importPkcs12({ keyId: certKeyId, data: fixture(file), password: 'test', requireUserPresence: false }),
+        { code: 'E_EXISTS' },
+      );
+    } finally {
+      await ks.deleteKey(certKeyId);
+    }
+    assert.equal(await ks.findKey(certKeyId), null);
+    assert.ok(!readdirSync(dir).some((f) => f.startsWith(certKeyId)));
+  });
+}
+
+test('a tampered .p12key fails to unseal', async (t) => {
+  if (!hardware) return t.skip('no Secure Enclave available');
+  if (!(await ks.capabilities()).pkcs12) return t.skip('PKCS#12 import needs macOS 15');
+  const id = `${certKeyId}.tamper`;
+  await ks.importPkcs12({ keyId: id, data: fixture('rsa2048-aes.p12'), password: 'test', requireUserPresence: false });
+  try {
+    const file = path.join(dir, `${id}.p12key`);
+    const bytes = readFileSync(file);
+    bytes[bytes.length - 1] ^= 0x01;
+    writeFileSync(file, bytes);
+    await assert.rejects(ks.sign(id, Buffer.from('x'), 'test'), { code: 'E_INTERNAL' });
+  } finally {
+    await ks.deleteKey(id);
+  }
 });
