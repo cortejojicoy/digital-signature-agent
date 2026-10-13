@@ -1,5 +1,7 @@
 // App lifecycle, single-instance lock, protocol links, tray and windows
 // (desktop-agent-plan.md §7).
+import { X509Certificate, randomBytes } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -21,17 +23,25 @@ import {
 
 import {
   IPC,
+  type CertificateErrorView,
+  type CertificateFileResult,
+  type CertificateImportResult,
+  type CertificatePreviewResult,
+  type CertificateRemoveResult,
+  type CertificateView,
   type JobState,
   type JobView,
+  type KeyStorageView,
   type PairingProgressView,
   type PairingResult,
   type StatusView,
   type UpdateView,
 } from '../shared/ipc';
-import { Agent } from './agent';
+import { Agent, type CertificateSummary } from './agent';
+import { CertificateError, CertificateStore } from './certificates';
 import { APP_ORIGIN, appUrl, handleAppScheme, registerAppScheme } from './app-protocol';
 import type { ConfirmRequest, JobOutcome } from './jobs';
-import { loadNativeKeyStore, type Sealer } from './keystore';
+import { loadNativeKeyStore, type Capabilities, type KeySource, type Sealer } from './keystore';
 import { PairingError, type PairingProgress } from './pairing';
 import { SCHEME, linkFromArgv } from './protocol';
 import { AVOID_KEYCHAIN } from './build-info';
@@ -50,6 +60,10 @@ const DEV = !app.isPackaged;
 const WINDOW_WIDTH = 460;
 const MIN_HEIGHT = 200;
 const SCREEN_MARGIN = 48;
+
+// A chosen .p12 waits in memory for its password this long (pkcs12-key-storage-plan.md §6.3).
+const CERTIFICATE_FILE_TTL_MS = 5 * 60_000;
+const MAX_CERTIFICATE_FILE = 64 * 1024;
 
 // ── Single instance + protocol registration (§7.2) ──
 
@@ -82,6 +96,8 @@ function main(): void {
   let settings: SettingsStore | null = null;
   // Developer mode: plain http:// to local-network apps. Always on under npm run dev.
   let developerMode = DEV;
+  // The .p12 the user picked, held here so the page never sees its path or bytes.
+  let certificateFile: { token: string; name: string; data: Buffer; expires: number } | null = null;
 
   interface PendingConfirm {
     request: ConfirmRequest;
@@ -133,7 +149,12 @@ function main(): void {
     const store = new Store(app.getPath('userData'), tokenCipher(keystore));
     await store.load();
     settings = new SettingsStore(app.getPath('userData'));
-    developerMode = DEV || (await settings.load()).developerMode;
+    const saved = await settings.load();
+    developerMode = DEV || saved.developerMode;
+    // People who paired before the chooser existed keep their security-chip keys, unasked.
+    if (saved.keyStorage === null && store.list().length > 0) await settings.update({ keyStorage: 'platform' });
+    const certificates = new CertificateStore(app.getPath('userData'));
+    await certificates.load();
 
     agent = new Agent({
       keystore,
@@ -145,6 +166,8 @@ function main(): void {
       // for local testing. Otherwise Node's fetch and its bundled CA list.
       fetch: (input, init) => (developerMode ? net.fetch(input, init) : fetch(input, init)),
       biometryOnly: process.env.KUKUX_BIOMETRY_ONLY === '1',
+      certificates,
+      keyStorage: () => settings?.get().keyStorage ?? null,
       confirm: openConfirm,
       parentWindow: () => activeConfirm?.window.getNativeWindowHandle(),
       onPairLink: (link) => {
@@ -393,6 +416,67 @@ function main(): void {
     broadcastStatus();
   }
 
+  // ── Key storage and certificates (pkcs12-key-storage-plan.md §6.3, §7) ──
+
+  function keyStorageView(caps: Capabilities): KeyStorageView {
+    const summaries = agent!.certificateSummaries();
+    const active = summaries.find((c) => c.active) ?? null;
+    return {
+      selected: settings!.get().keyStorage,
+      platform: {
+        available: caps.hardware,
+        label: process.platform === 'win32' ? 'TPM' : 'Secure Enclave',
+      },
+      certificatesSupported: caps.pkcs12,
+      certificate: active ? certificateView(active) : null,
+      olderCertificates: summaries.filter((c) => !c.active).map(certificateView),
+    };
+  }
+
+  async function setKeyStorage(storage: KeySource): Promise<void> {
+    await settings!.update({ keyStorage: storage });
+    broadcastStatus();
+  }
+
+  function dropCertificateFile(): void {
+    certificateFile?.data.fill(0);
+    certificateFile = null;
+  }
+
+  function takeCertificateFile(token: string): Buffer | null {
+    if (!certificateFile || certificateFile.token !== token) return null;
+    if (Date.now() > certificateFile.expires) {
+      dropCertificateFile();
+      return null;
+    }
+    return certificateFile.data;
+  }
+
+  async function chooseCertificateFile(): Promise<CertificateFileResult | null> {
+    const options: Electron.OpenDialogOptions = {
+      title: 'Choose your certificate',
+      buttonLabel: 'Choose',
+      properties: ['openFile'],
+      filters: [{ name: 'Certificate (PKCS#12)', extensions: ['p12', 'pfx'] }],
+    };
+    const picked = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    const file = picked.filePaths[0];
+    if (picked.canceled || !file) return null;
+    const stat = await fs.stat(file).catch(() => null);
+    if (!stat?.isFile()) return { ok: false, error: "That file can't be read.", code: 'E_BAD_FILE' };
+    if (stat.size === 0 || stat.size > MAX_CERTIFICATE_FILE) {
+      return { ok: false, error: "That doesn't look like a certificate file (.p12 or .pfx).", code: 'E_BAD_FILE' };
+    }
+    dropCertificateFile();
+    certificateFile = {
+      token: randomBytes(16).toString('hex'),
+      name: path.basename(file),
+      data: await fs.readFile(file),
+      expires: Date.now() + CERTIFICATE_FILE_TTL_MS,
+    };
+    return { ok: true, token: certificateFile.token, fileName: certificateFile.name };
+  }
+
   // ── IPC (§7.1): only from our own bundled pages ──
 
   function trusted(event: IpcMainInvokeEvent): boolean {
@@ -414,12 +498,14 @@ function main(): void {
         .refreshOtherDevices()
         .then((changed) => changed && broadcastStatus())
         .catch(() => {});
+      const capabilities = await agent!.capabilities();
       return {
         version: app.getVersion(),
         platform: process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'other',
-        capabilities: await agent!.capabilities(),
+        capabilities,
         servers: agent!.servers(),
         pendingRevokes: agent!.pendingRevokes(),
+        keyStorage: keyStorageView(capabilities),
         developerMode: { on: developerMode, locked: DEV },
       };
     });
@@ -496,6 +582,7 @@ function main(): void {
             ? { matchCode: job.login.match_code, browser: job.login.browser ?? '', ip: job.login.ip ?? '' }
             : undefined,
         transfer: job.purpose === 'transfer' && job.transfer ? { name: job.transfer.name, device: job.transfer.device } : undefined,
+        certificateName: agent!.servers().find((s) => s.id === server.id)?.certificateName,
       };
     });
 
@@ -513,6 +600,57 @@ function main(): void {
     handle(IPC.checkForUpdates, () => checkForUpdates());
     handle(IPC.installUpdate, () => installUpdate());
     handle(IPC.openReleases, () => shell.openExternal(ALL_RELEASES_PAGE));
+    handle(IPC.setKeyStorage, (storage: unknown) => setKeyStorage(storage === 'pkcs12' ? 'pkcs12' : 'platform'));
+    handle(IPC.chooseCertificateFile, () => chooseCertificateFile());
+    handle(IPC.inspectCertificate, async (input: { token?: unknown; password?: unknown }): Promise<CertificatePreviewResult> => {
+      const data = takeCertificateFile(String(input?.token ?? ''));
+      if (!data) return fileExpired();
+      try {
+        const preview = await agent!.inspectCertificate(data, String(input?.password ?? ''));
+        return {
+          ok: true,
+          preview: {
+            commonName: preview.commonName,
+            organization: preview.organization,
+            subject: preview.subject,
+            issuerName: preview.issuerName,
+            serialHex: preview.serialHex,
+            notBefore: preview.notBefore,
+            notAfter: preview.notAfter,
+            fingerprint256: preview.fingerprint256,
+            algorithm: preview.algorithm === 'RS256' ? `RSA ${preview.keyBits}` : 'ECDSA P-256',
+            keyBits: preview.keyBits,
+            pnpki: preview.pnpki,
+            chain: preview.chain.map((der) => commonNameOf(der)),
+            warnings: preview.warnings.map((w) => w.message),
+            alreadyImported: preview.alreadyImported,
+          },
+        };
+      } catch (err) {
+        return certificateFailure(err);
+      }
+    });
+    handle(IPC.importCertificate, async (input: { token?: unknown; password?: unknown }): Promise<CertificateImportResult> => {
+      const data = takeCertificateFile(String(input?.token ?? ''));
+      if (!data) return fileExpired();
+      try {
+        const imported = await agent!.importCertificate(data, String(input?.password ?? ''));
+        dropCertificateFile();
+        await setKeyStorage('pkcs12');
+        const summary = agent!.certificateSummaries().find((c) => c.id === imported.id)!;
+        return { ok: true, certificate: certificateView(summary) };
+      } catch (err) {
+        return certificateFailure(err);
+      }
+    });
+    handle(IPC.removeCertificate, async (id: unknown): Promise<CertificateRemoveResult> => {
+      try {
+        await agent!.removeCertificate(String(id));
+        return { ok: true };
+      } catch (err) {
+        return certificateFailure(err);
+      }
+    });
     // Needs the sending window, so not through handle().
     ipcMain.handle(IPC.fitContent, (event, height: unknown) => {
       if (!trusted(event)) throw new Error('untrusted sender');
@@ -536,6 +674,48 @@ function tokenCipher(sealer: Sealer): TokenCipher {
     encrypt: (plain) => safeStorage.encryptString(plain),
     decrypt: (cipher) => safeStorage.decryptString(cipher),
   };
+}
+
+const EXPIRY_WARNING_MS = 30 * 86_400_000;
+
+function certificateView(c: CertificateSummary): CertificateView {
+  return {
+    id: c.id,
+    commonName: c.commonName,
+    organization: c.organization,
+    subject: c.subject,
+    issuer: c.issuer,
+    issuerName: c.issuerName,
+    serialHex: c.serialHex,
+    notBefore: c.notBefore,
+    notAfter: c.notAfter,
+    fingerprint256: c.fingerprint256,
+    pnpki: c.pnpki,
+    protection: c.protection,
+    userPresence: c.userPresence,
+    active: c.active,
+    usedBy: c.usedBy,
+    expiresSoon: Date.parse(c.notAfter) - Date.now() < EXPIRY_WARNING_MS,
+  };
+}
+
+function certificateFailure(err: unknown): CertificateErrorView {
+  if (err instanceof CertificateError) return { ok: false, error: err.message, code: err.code };
+  return { ok: false, error: err instanceof Error ? err.message : String(err) };
+}
+
+function fileExpired(): CertificateErrorView {
+  return { ok: false, error: 'Choose the certificate file again.', code: 'file_expired' };
+}
+
+/** "CN=…" of a DER certificate, for the preview's chain list. Public data. */
+function commonNameOf(der: Buffer): string {
+  try {
+    const subject = new X509Certificate(der).subject.split('\n');
+    return subject.find((line) => line.startsWith('CN='))?.slice(3) ?? subject.join(', ');
+  } catch {
+    return 'Unreadable certificate';
+  }
 }
 
 function toProgressView(p: PairingProgress): PairingProgressView {
