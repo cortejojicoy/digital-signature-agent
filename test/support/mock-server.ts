@@ -7,12 +7,14 @@
 // package must make is here (proof verification, single-use link tokens,
 // request-proof replay and staleness, min_version, device binding, one
 // device per computer and app, one computer per account, blocked device
-// types). It also plays the hub: usernameless sign-in (login links),
-// transfer jobs and requesting_app.
+// types, and for software certificates the chain, revocation and one
+// computer per certificate). It also plays the hub: usernameless sign-in
+// (login links), transfer jobs and requesting_app.
 //
 // Self-contained (node: imports only) so Node can run it directly with type
 // stripping.
-import { createHash, createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto';
+import { X509Certificate, createHash, createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { networkInterfaces } from 'node:os';
@@ -32,6 +34,12 @@ export interface MockServerOptions {
   requirePresence?: boolean;
   /** Mirrors signature.devices.agent.blocked_device_types; virtual machines by default. */
   blockedDeviceTypes?: string[];
+  /** Mirrors signature.devices.pkcs12.enabled (pkcs12-key-storage-plan.md §9.5). Off by default. */
+  acceptsCertificates?: boolean;
+  /** DER roots a certificate chain must end at (signature.devices.pkcs12.trusted_roots). */
+  trustedRoots?: Buffer[];
+  /** Upper-case hex serials to treat as revoked, standing in for OCSP / CRL. */
+  revokedSerials?: string[];
   users?: MockUser[];
   now?: () => number;
 }
@@ -51,6 +59,8 @@ interface Pairing {
   replacesDeviceUuid?: string;
   /** The device whose session key signed the new keys at claim (rebind proof). */
   provenDeviceUuid?: string;
+  /** The checked certificate, for a software-certificate claim. */
+  certificate?: { fingerprint: string; subject: string };
 }
 
 export interface Device {
@@ -71,6 +81,10 @@ export interface Device {
   agentVersion: string;
   revoked: boolean;
   rebound: boolean;
+  keySource: 'platform' | 'pkcs12';
+  /** keySource 'pkcs12': the leaf's SHA-256 fingerprint and subject. */
+  certificateFingerprint: string | null;
+  certificateSubject: string | null;
 }
 
 export interface Job {
@@ -182,6 +196,9 @@ export class MockSigningServer {
   minVersion: string;
   requirePresence: boolean;
   blockedDeviceTypes: string[];
+  acceptsCertificates: boolean;
+  trustedRoots: Buffer[];
+  readonly revokedSerials: Set<string>;
   /** The next DELETE /device answers 503, as if the server were unreachable. */
   failNextUnpair = false;
   /** Every DELETE /device answers 503 (npm run mock-server -- --fail-revoke). */
@@ -205,6 +222,9 @@ export class MockSigningServer {
     this.minVersion = options.minVersion ?? '0.0.0';
     this.requirePresence = options.requirePresence ?? false;
     this.blockedDeviceTypes = options.blockedDeviceTypes ?? ['virtual_machine'];
+    this.acceptsCertificates = options.acceptsCertificates ?? false;
+    this.trustedRoots = options.trustedRoots ?? [];
+    this.revokedSerials = new Set((options.revokedSerials ?? []).map((serial) => serial.toUpperCase()));
     this.users = options.users ?? [{ id: '42', name: 'Juan dela Cruz' }];
     this.now = options.now ?? Date.now;
   }
@@ -269,6 +289,9 @@ export class MockSigningServer {
       deviceType: String(c.device?.device_type ?? 'other'),
       virtual: !!c.device?.virtual,
       agentVersion: c.agent_version,
+      keySource: c.key_source === 'pkcs12' ? ('pkcs12' as const) : ('platform' as const),
+      certificateFingerprint: c.key_source === 'pkcs12' ? (p.certificate?.fingerprint ?? null) : null,
+      certificateSubject: c.key_source === 'pkcs12' ? (p.certificate?.subject ?? null) : null,
     };
     const existing = stillProven ?? (holder && holder.userId === p.userId ? holder : null);
     if (existing) {
@@ -478,6 +501,50 @@ export class MockSigningServer {
     }
   }
 
+  /**
+   * AgentCertificateValidator + revocation (pkcs12-key-storage-plan.md §9.2):
+   * the chain links up to a trusted root, the leaf may sign and is in date,
+   * its key is the identity key, and it isn't revoked.
+   */
+  private checkCertificate(c: Record<string, any>): { fingerprint: string; subject: string } {
+    if (!this.acceptsCertificates) {
+      throw new HttpError(422, 'certificates_disabled', 'This app does not accept software certificates.');
+    }
+    let chain: X509Certificate[];
+    try {
+      chain = (Array.isArray(c.certificate_chain) ? c.certificate_chain : []).map(
+        (der: unknown) => new X509Certificate(Buffer.from(String(der), 'base64')),
+      );
+    } catch {
+      throw new HttpError(422, 'certificate_untrusted', 'The certificate chain could not be read.');
+    }
+    const leaf = chain[0];
+    if (!leaf || leaf.ca) throw new HttpError(422, 'certificate_untrusted', 'No signing certificate was sent.');
+    const leafSpki = leaf.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+    if (leafSpki !== c.identity_public_key) {
+      throw new HttpError(422, 'certificate_untrusted', "The certificate's key is not the identity key.");
+    }
+    const now = this.now();
+    if (now > Date.parse(leaf.validTo) || now < Date.parse(leaf.validFrom)) {
+      throw new HttpError(422, 'certificate_expired', 'The certificate is not valid now.');
+    }
+    for (let i = 0; i + 1 < chain.length; i++) {
+      if (!chain[i].checkIssued(chain[i + 1]) || !chain[i].verify(chain[i + 1].publicKey)) {
+        throw new HttpError(422, 'certificate_untrusted', 'The certificate chain is broken.');
+      }
+    }
+    const roots = this.trustedRoots.map((der) => new X509Certificate(der));
+    const top = chain[chain.length - 1];
+    const anchored = roots.some(
+      (root) => root.fingerprint256 === top.fingerprint256 || (top.checkIssued(root) && top.verify(root.publicKey)),
+    );
+    if (!anchored) throw new HttpError(422, 'certificate_untrusted', 'The certificate is not from a trusted issuer.');
+    if (this.revokedSerials.has(leaf.serialNumber.toUpperCase())) {
+      throw new HttpError(422, 'certificate_revoked', 'The certificate has been revoked.');
+    }
+    return { fingerprint: leaf.fingerprint256, subject: leaf.subject.split('\n').join(', ') };
+  }
+
   private lookup(json: { user_code?: string }) {
     const hash = sha256(normalizeCode(json.user_code ?? ''));
     const p = [...this.pairings.values()].find((x) => x.userCodeHash === hash && x.status === 'pending');
@@ -496,6 +563,7 @@ export class MockSigningServer {
         ? { uuid: computer.uuid, label: computer.label, device_type: computer.deviceType, hardware_id_hash: computer.hardwareIdHash }
         : null,
       devices_url: `${this.origin}/devices`,
+      accepts_certificates: this.acceptsCertificates,
       expires_at: new Date(p.expiresAt).toISOString(),
     };
   }
@@ -515,6 +583,7 @@ export class MockSigningServer {
     if (this.requirePresence && !c.user_presence) {
       throw new HttpError(422, 'presence_required', 'This server requires Touch ID or Windows Hello.');
     }
+    const certificate = c.key_source === 'pkcs12' ? this.checkCertificate(c) : undefined;
     const type = String(c.device?.device_type ?? 'other');
     if (this.blockedDeviceTypes.includes(type) || (c.device?.virtual && this.blockedDeviceTypes.includes('virtual_machine'))) {
       throw new HttpError(422, 'device_type_not_allowed', 'This kind of device is not allowed to pair.');
@@ -532,6 +601,20 @@ export class MockSigningServer {
         device: { label: blocker.label, device_type: blocker.deviceType },
       });
     }
+    // One active computer per certificate, across accounts (§9.3). Re-pairing
+    // the device that already holds it is fine.
+    if (certificate) {
+      const same = proven ?? (holder && holder.userId === p.userId ? holder : undefined);
+      const other = [...this.devices.values()].find(
+        (d) => !d.revoked && d.certificateFingerprint === certificate.fingerprint && d !== same,
+      );
+      if (other) {
+        throw new HttpError(409, 'certificate_in_use', `This certificate is already paired on ${other.label}.`, {
+          device: { label: other.label, device_type: other.deviceType },
+        });
+      }
+    }
+    p.certificate = certificate;
     p.status = 'awaiting_confirmation';
     p.claim = c;
     p.pollSecret = b64url(32);
@@ -722,14 +805,21 @@ function lanAddress(): string | null {
 }
 
 // Standalone: node test/support/mock-server.ts [port] [--lan] [--allow-vm] [--fail-revoke]
+//   [--certificates] [--revoke <serial hex>]…
+// --certificates accepts software certificates issued under the Philippine
+// Root CA - G2 or the test fixtures' root. --revoke treats a serial as revoked.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const port = Number(args.find((a) => /^\d+$/.test(a)) ?? 8787);
+  const fixture = (file: string) => readFileSync(new URL(`../fixtures/${file}`, import.meta.url));
   const server = new MockSigningServer({
     port,
     lan: args.includes('--lan'),
     // Virtual machines are refused by default, like the package.
     blockedDeviceTypes: args.includes('--allow-vm') ? [] : undefined,
+    acceptsCertificates: args.includes('--certificates'),
+    trustedRoots: [fixture('pnpki/philippine-root-ca-g2.cer'), fixture('pkcs12/test-root.cer')],
+    revokedSerials: args.flatMap((a, i) => (a === '--revoke' && args[i + 1] ? [args[i + 1]] : [])),
   });
   // Every unpair fails as if offline, to try the "Can't reach" prompt.
   server.failUnpairs = args.includes('--fail-revoke');
@@ -743,4 +833,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log('                            then: open "<link from the response>"');
   console.log(`Hub-style jobs:             add "requesting_app":"performance", or "purpose":"transfer","transfer":{"name":"Juan dela Cruz","device":"MacBook Air"}`);
   console.log(`Sign in (login link):       curl -X POST ${origin}/__dev/logins`);
+  if (server.acceptsCertificates) {
+    const revoked = [...server.revokedSerials];
+    console.log(`\nSoftware certificates: on (PNPKI root and test root trusted)${revoked.length ? `; revoked: ${revoked.join(', ')}` : ''}`);
+  }
 }
