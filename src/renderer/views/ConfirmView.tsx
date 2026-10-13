@@ -194,6 +194,12 @@ export function ConfirmView({ jobId }: { jobId: string }) {
           <dd className="document-title">{job.documentTitle}</dd>
           <dt>Signing as</dt>
           <dd>{job.signerName}</dd>
+          {job.certificateName && (
+            <>
+              <dt>Certificate</dt>
+              <dd>{job.certificateName}</dd>
+            </>
+          )}
           <dt>Action</dt>
           <dd>{PURPOSES[job.purpose] ?? job.purpose}</dd>
           <dt>Key</dt>
