@@ -13,18 +13,26 @@
 // is already paired with another computer, or if the server doesn't allow
 // this kind of device. The server enforces all three again at claim; these
 // checks just fail early and explain why.
+//
+// With a software certificate (pkcs12-key-storage-plan.md §6.4) the identity
+// key is the imported certificate's, shared by every certificate pairing, and
+// only the session key is new. The server gets the certificate chain.
 import { randomBytes } from 'node:crypto';
 
 import { ApiError, type AgentApi, type PairingLookup } from './api';
 import { canonicalMessage, registrationPayloadHash, sha256Hex } from './canonical';
+import type { StoredCertificate } from './certificates';
 import { detectDeviceType, isDeviceType, type DeviceType } from './device-type';
-import type { KeyInfo, KeyStore } from './keystore';
-import type { PairedServer, Store } from './store';
+import type { KeyInfo, KeySource, KeyStore } from './keystore';
+import { keySourceOf, ownedKeyIds, type PairedServer, type Store } from './store';
 
 export type PairingProgress =
   | { stage: 'looking_up' }
-  /** This computer already holds this account's signature for the app; waiting for confirmRepair. */
-  | { stage: 'already_paired_locally'; serverName: string; userName: string }
+  /**
+   * This computer already holds this account's signature for the app; waiting
+   * for confirmRepair. `from` / `to`: its key storage now, and after re-pairing.
+   */
+  | { stage: 'already_paired_locally'; serverName: string; userName: string; from: KeySource; to: KeySource }
   | { stage: 'creating_keys'; serverName: string }
   | {
       stage: 'awaiting_confirmation';
@@ -46,7 +54,16 @@ export type PairingErrorCode =
   | 'app_already_paired'
   | 'machine_already_paired'
   | 'account_already_paired'
-  | 'device_type_not_allowed';
+  | 'device_type_not_allowed'
+  // Software certificates (pkcs12-key-storage-plan.md §8)
+  | 'no_key_storage'
+  | 'certificates_disabled'
+  | 'certificate_missing'
+  | 'certificate_untrusted'
+  | 'certificate_revoked'
+  | 'certificate_expired'
+  | 'certificate_subject_mismatch'
+  | 'certificate_in_use';
 
 export class PairingError extends Error {
   constructor(
@@ -68,6 +85,8 @@ export interface PairingDeps {
   agentVersion: string;
   /** macOS: require biometrics instead of "biometrics or password". */
   biometryOnly?: boolean;
+  /** Pair with this imported certificate's key instead of a new platform key (§6.4). */
+  certificate?: StoredCertificate | null;
   pollIntervalMs?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
@@ -89,12 +108,23 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
   const { keystore, store, api } = deps;
   const progress = opts.onProgress ?? (() => {});
   const sleep = deps.sleep ?? abortableSleep;
+  const certificate = deps.certificate ?? null;
+  const keySource: KeySource = certificate ? 'pkcs12' : 'platform';
 
   progress({ stage: 'looking_up' });
   const lookup = await api.lookupPairing(code);
   validateLookup(lookup, api.origin);
   const server = lookup.server;
   const userId = String(lookup.user_id);
+
+  // Before any key or OS prompt: an app that doesn't check certificates
+  // (or predates them) must not get one as if it were a hardware key.
+  if (certificate && lookup.accepts_certificates !== true) {
+    throw new PairingError(
+      'certificates_disabled',
+      `${server.name} doesn't accept software certificates. Choose the security chip as key storage to pair with it.`,
+    );
+  }
 
   const device = await keystore.deviceInfo(server.salt);
   const deviceType = detectDeviceType(device);
@@ -115,7 +145,13 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
   }
 
   if (existing) {
-    progress({ stage: 'already_paired_locally', serverName: server.name, userName: existing.userName });
+    progress({
+      stage: 'already_paired_locally',
+      serverName: server.name,
+      userName: existing.userName,
+      from: keySourceOf(existing),
+      to: keySource,
+    });
     const repair = opts.confirmRepair ? await opts.confirmRepair(existing) : true;
     if (!repair || opts.signal?.aborted) throw new PairingError('aborted', 'Pairing was cancelled.');
   }
@@ -123,17 +159,29 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
   progress({ stage: 'creating_keys', serverName: server.name });
 
   const prefix = `ds.${sha256Hex(`${api.origin}|${server.id}`).slice(0, 16)}.${randomBytes(4).toString('hex')}`;
-  const identityKeyId = `${prefix}.identity`;
+  const identityKeyId = certificate ? certificate.keyId : `${prefix}.identity`;
   const sessionKeyId = `${prefix}.session`;
   const created: string[] = [];
 
   try {
-    const identity = await keystore.createKey({
-      keyId: identityKeyId,
-      requireUserPresence: true,
-      biometryOnly: deps.biometryOnly,
-    });
-    created.push(identityKeyId);
+    let identity: KeyInfo;
+    if (certificate) {
+      const found = await keystore.findKey(certificate.keyId);
+      if (!found) {
+        throw new PairingError(
+          'certificate_missing',
+          `The key of your certificate (${certificate.commonName}) is missing from this computer. Import the certificate again.`,
+        );
+      }
+      identity = found; // the certificate's key: shared, never in `created`
+    } else {
+      identity = await keystore.createKey({
+        keyId: identityKeyId,
+        requireUserPresence: true,
+        biometryOnly: deps.biometryOnly,
+      });
+      created.push(identityKeyId);
+    }
     const session = await keystore.createKey({ keyId: sessionKeyId, requireUserPresence: false });
     created.push(sessionKeyId);
 
@@ -145,7 +193,8 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
     }
     if (session.algorithm !== 'ES256') throw new Error('the session key must be ES256');
 
-    const attestation = await keystore.attest(identityKeyId).catch(() => null);
+    // An imported key has no attestation: nobody vouches for where it came from.
+    const attestation = certificate ? null : await keystore.attest(identityKeyId).catch(() => null);
     const message = canonicalMessage(
       'register_agent',
       lookup.nonce,
@@ -163,6 +212,8 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
       session_public_key: session.spki.toString('base64'),
       protection: identity.protection,
       user_presence: identity.userPresence,
+      key_source: keySource,
+      certificate_chain: certificate ? certificate.chain : undefined,
       attestation: attestation
         ? {
             format: attestation.format,
@@ -186,7 +237,7 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
       proof: proof.toString('base64'),
       replaces: rebind,
     }).catch((err: unknown) => {
-      throw fromClaimError(err, server.name, deviceType, lookup.user_name, manageUrl);
+      throw fromClaimError(err, server.name, deviceType, lookup.user_name, manageUrl, certificate);
     });
 
     const replaces = claim.existing_device;
@@ -208,13 +259,14 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
       const result = await api.pollPairing(lookup.pairing, claim.poll_secret);
       if (result.status === 'confirmed') {
         const type = isDeviceType(result.device.device_type) ? result.device.device_type : deviceType;
-        const paired = toPairedServer(lookup, api.origin, identity, identityKeyId, sessionKeyId, result.device, type);
+        const paired = toPairedServer(lookup, api.origin, identity, identityKeyId, sessionKeyId, result.device, type, certificate);
         // Re-check: another pairing for this app may have finished meanwhile.
         const previous = store.get(server.id);
         if (previous && previous.userId !== userId) throw alreadyPairedError(previous);
         await store.save(paired, result.token);
         created.length = 0; // keys now belong to the saved pairing
-        if (previous) await deleteKeys(keystore, [previous.identityKeyId, previous.sessionKeyId]);
+        // A certificate's key stays: other pairings may share it (§6.5).
+        if (previous) await deleteKeys(keystore, ownedKeyIds(previous));
         const rebound = result.rebound === true;
         progress({ stage: 'paired', server: paired, rebound });
         return paired;
@@ -254,6 +306,7 @@ function toPairedServer(
   sessionKeyId: string,
   device: { uuid: string; label: string },
   deviceType: DeviceType,
+  certificate: StoredCertificate | null,
 ): PairedServer {
   return {
     id: lookup.server.id,
@@ -271,6 +324,8 @@ function toPairedServer(
     userPresence: identity.userPresence,
     pairedAt: new Date().toISOString(),
     deviceType,
+    keySource: certificate ? 'pkcs12' : 'platform',
+    certificateId: certificate?.id,
   };
 }
 
@@ -349,8 +404,11 @@ function fromClaimError(
   deviceType: DeviceType,
   userName: string | undefined,
   manageUrl: string,
+  certificate: StoredCertificate | null,
 ): unknown {
   if (!(err instanceof ApiError)) return err;
+  const refused = certificate ? certificateRefusal(err, serverName, userName, certificate, manageUrl) : null;
+  if (refused) return refused;
   if (err.code === 'account_already_paired') {
     const device = err.details.device as { label?: unknown } | undefined;
     return accountPairedError(serverName, userName, device?.label, manageUrl);
@@ -364,6 +422,51 @@ function fromClaimError(
   }
   if (err.code === 'device_type_not_allowed') return blockedError(deviceType, serverName);
   return err;
+}
+
+/** The server's verdict on a certificate at claim (§8), in the user's words. */
+function certificateRefusal(
+  err: ApiError,
+  serverName: string,
+  userName: string | undefined,
+  certificate: StoredCertificate,
+  manageUrl: string,
+): PairingError | null {
+  switch (err.code) {
+    case 'certificates_disabled':
+      return new PairingError(
+        'certificates_disabled',
+        `${serverName} doesn't accept software certificates. Choose the security chip as key storage to pair with it.`,
+      );
+    case 'certificate_untrusted':
+      return new PairingError('certificate_untrusted', `${serverName} doesn't accept certificates from ${certificate.issuerName}.`);
+    case 'certificate_revoked':
+      return new PairingError(
+        'certificate_revoked',
+        `Your certificate (${certificate.commonName}) has been revoked by its issuer. Get a new one, then import it.`,
+      );
+    case 'certificate_expired':
+      return new PairingError('certificate_expired', `Your certificate (${certificate.commonName}) has expired.`);
+    case 'certificate_subject_mismatch': {
+      const whose = userName ? `${userName}'s account` : 'this account';
+      return new PairingError(
+        'certificate_subject_mismatch',
+        `This certificate is for ${certificate.commonName}, which ${serverName} doesn't match to ${whose}.`,
+      );
+    }
+    case 'certificate_in_use': {
+      const device = err.details.device as { label?: unknown } | undefined;
+      const where = typeof device?.label === 'string' && device.label.trim() ? device.label.trim() : 'another computer';
+      return new PairingError(
+        'certificate_in_use',
+        `This certificate is already paired on ${where}. Remove it there first, then pair again.`,
+        undefined,
+        manageUrl,
+      );
+    }
+    default:
+      return null;
+  }
 }
 
 export async function deleteKeys(keystore: KeyStore, keyIds: string[]): Promise<void> {
