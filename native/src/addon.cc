@@ -160,6 +160,8 @@ Napi::Value FindKey(const Napi::CallbackInfo& info) {
         });
 }
 
+std::string requirePassword(const Napi::Value& value);
+
 Napi::Value Sign(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     std::string keyId = requireKeyId(info[0]);
@@ -175,11 +177,23 @@ Napi::Value Sign(const Napi::CallbackInfo& info) {
         auto handle = info[3].As<Napi::Buffer<uint8_t>>();
         if (handle.Length() >= sizeof(void*)) parent = *reinterpret_cast<void**>(handle.Data());
     }
+    // An imported certificate key's password (certificate-password-pairing-plan.md §6.3).
+    std::shared_ptr<std::string> password;
+    if (info.Length() > 4 && info[4].IsString()) password = std::make_shared<std::string>(requirePassword(info[4]));
 
     auto result = std::make_shared<Bytes>();
     return queue(
-        env, [keyId, message, reason, parent, result] {
-            *result = store().sign(keyId, message, reason, parent);
+        env,
+        [keyId, message, reason, parent, password, result] {
+            if (password) {
+                struct Wipe {
+                    std::shared_ptr<std::string> p;
+                    ~Wipe() { ks::secureZero(*p); }
+                } wipe{password};
+                *result = store().signCertificate(keyId, message, *password);
+            } else {
+                *result = store().sign(keyId, message, reason, parent);
+            }
         },
         [result](Napi::Env env) -> Napi::Value { return toBuffer(env, *result); });
 }
@@ -267,8 +281,6 @@ Napi::Value ImportPkcs12(const Napi::CallbackInfo& info) {
     opts->keyId = requireKeyId(o.Get("keyId"));
     opts->data = requirePkcs12(o.Get("data"));
     opts->password = requirePassword(o.Get("password"));
-    opts->requireUserPresence = o.Get("requireUserPresence").ToBoolean();
-    opts->biometryOnly = o.Has("biometryOnly") && o.Get("biometryOnly").ToBoolean();
 
     auto result = std::make_shared<ks::ImportedCertificate>();
     return queue(
@@ -286,6 +298,21 @@ Napi::Value ImportPkcs12(const Napi::CallbackInfo& info) {
             out.Set("key", keyInfoToJs(env, result->key));
             return out;
         });
+}
+
+Napi::Value VerifyCertificatePassword(const Napi::CallbackInfo& info) {
+    std::string keyId = requireKeyId(info[0]);
+    auto password = std::make_shared<std::string>(requirePassword(info[1]));
+    return queue(
+        info.Env(),
+        [keyId, password] {
+            struct Wipe {
+                std::shared_ptr<std::string> p;
+                ~Wipe() { ks::secureZero(*p); }
+            } wipe{password};
+            store().verifyCertificatePassword(keyId, *password);
+        },
+        [](Napi::Env env) -> Napi::Value { return env.Undefined(); });
 }
 
 Napi::Value DeviceInfo(const Napi::CallbackInfo& info) {
@@ -368,6 +395,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("deleteKey", Napi::Function::New(env, DeleteKey));
     exports.Set("inspectPkcs12", Napi::Function::New(env, InspectPkcs12));
     exports.Set("importPkcs12", Napi::Function::New(env, ImportPkcs12));
+    exports.Set("verifyCertificatePassword", Napi::Function::New(env, VerifyCertificatePassword));
     exports.Set("deviceInfo", Napi::Function::New(env, DeviceInfo));
     exports.Set("configure", Napi::Function::New(env, Configure));
     exports.Set("sealingAvailable", Napi::Function::New(env, SealingAvailable));
