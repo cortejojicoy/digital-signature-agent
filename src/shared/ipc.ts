@@ -28,6 +28,9 @@ export const IPC = {
   inspectCertificate: 'agent:inspect-certificate',
   importCertificate: 'agent:import-certificate',
   removeCertificate: 'agent:remove-certificate',
+  // Certificate password and one storage at a time (certificate-password-pairing-plan.md §7.3)
+  previewPairing: 'agent:preview-pairing',
+  switchKeyStorage: 'agent:switch-key-storage',
   // main → renderer events
   statusChanged: 'agent:status-changed',
   pairingProgress: 'agent:pairing-progress',
@@ -126,6 +129,29 @@ export type CertificatePreviewResult = { ok: true; preview: CertificatePreviewVi
 export type CertificateImportResult = { ok: true; certificate: CertificateView } | CertificateErrorView;
 export type CertificateRemoveResult = { ok: true } | CertificateErrorView;
 
+/** "Open in Kukux Sign Agent" in certificate mode: what is about to be paired (§3.2). */
+export interface PairingPreviewView {
+  serverName: string;
+  origin: string;
+  /** e.g. amp.up.edu.ph, shown so a look-alike stands out. */
+  host: string;
+  userName: string;
+  certificateName: string;
+  /** This account's signature for the app is already here: pairing replaces it. */
+  repair: boolean;
+}
+
+export type PairingPreviewResult =
+  | { ok: true; preview: PairingPreviewView }
+  | { ok: false; error: string; code?: string; manageUrl?: string };
+
+/** What switching key storage unpaired, by app name (§5.2). */
+export interface SwitchResultView {
+  unpaired: string[];
+  queued: string[];
+  failed: string[];
+}
+
 export interface StatusView {
   version: string;
   platform: 'macos' | 'windows' | 'other';
@@ -198,10 +224,16 @@ export interface JobView {
   transfer?: { name: string; device: string };
   /** A certificate pairing: the certificate that signs. */
   certificateName?: string;
+  /** Approve with the certificate password instead of Touch ID / Hello (§4). */
+  passwordRequired: boolean;
 }
 
 export type JobState =
   | { state: 'waiting_for_os_prompt' }
+  /** Signing with the certificate password. */
+  | { state: 'signing' }
+  /** The certificate password was wrong (or missing): ask again in the same window. */
+  | { state: 'password_rejected'; error: string; code: 'E_BAD_PASSWORD' | 'E_LOCKED'; retryAt?: string }
   | { state: 'completed' }
   | { state: 'rejected'; reason: string }
   | { state: 'failed'; error: string };
@@ -209,12 +241,16 @@ export type JobState =
 /** What the preload exposes as window.agent. */
 export interface AgentBridge {
   getStatus(): Promise<StatusView>;
-  startPairing(input: { origin: string; code: string }): Promise<PairingResult>;
+  /** In certificate mode, `password` is the certificate's (§3). */
+  startPairing(input: { origin: string; code: string; password?: string }): Promise<PairingResult>;
+  /** Looks the code up and runs the early checks; changes nothing (§3.2). */
+  previewPairing(input: { origin: string; code: string }): Promise<PairingPreviewResult>;
   cancelPairing(): Promise<void>;
   /** Answers an `already_paired_locally` progress: true re-pairs, false stops. */
   confirmRepair(repair: boolean): Promise<void>;
   getJob(id: string): Promise<JobView | null>;
-  approveJob(id: string): Promise<void>;
+  /** A certificate job approves with its password; a wrong one comes back as `password_rejected`. */
+  approveJob(id: string, opts?: { password?: string }): Promise<void>;
   rejectJob(id: string): Promise<void>;
   /** Tries the server first; `offline: 'remove'` removes locally if it can't be reached. */
   unpair(serverId: string, opts?: { offline?: 'ask' | 'remove' }): Promise<UnpairResult>;
@@ -233,6 +269,12 @@ export interface AgentBridge {
   fitContent(height: number): Promise<void>;
   setKeyStorage(storage: KeySourceView): Promise<void>;
   /**
+   * Unpairs every app paired with the other storage (server first, queued if
+   * offline), then selects `storage` (§5). `removeCertificate`: switching to
+   * the security chip also deletes the imported certificate.
+   */
+  switchKeyStorage(storage: KeySourceView, opts?: { removeCertificate?: boolean }): Promise<SwitchResultView>;
+  /**
    * Opens the system file picker for a .p12 / .pfx. The main process keeps the
    * bytes; the page only gets an opaque token, valid for 5 minutes.
    */
@@ -243,7 +285,8 @@ export interface AgentBridge {
   removeCertificate(id: string): Promise<CertificateRemoveResult>;
   onStatusChanged(cb: () => void): () => void;
   onPairingProgress(cb: (p: PairingProgressView) => void): () => void;
-  onPairPrefill(cb: (p: { origin: string; code: string }) => void): () => void;
+  /** `certificate`: the agent is in certificate mode, so pair with the password screen (§3.1). */
+  onPairPrefill(cb: (p: { origin: string; code: string; certificate: boolean }) => void): () => void;
   onJobState(cb: (s: JobState & { id: string }) => void): () => void;
   onUpdateChanged(cb: (u: UpdateView) => void): () => void;
 }
