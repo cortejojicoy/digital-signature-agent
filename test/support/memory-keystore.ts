@@ -33,6 +33,8 @@ export function fixturePkcs12(name: 'rsa2048-aes' | 'second'): FakePkcs12 {
 interface Entry {
   info: KeyInfo;
   privateKey: KeyObject;
+  /** Imported certificate keys: the password that unlocks them. */
+  password?: string;
 }
 
 export interface MemoryKeyStoreOptions {
@@ -71,7 +73,7 @@ export class MemoryKeyStore implements KeyStore {
     return { chain: [...file.chain], algorithm: 'RS256', keyBits: 2048 };
   }
 
-  async importPkcs12(o: { keyId: string; data: Buffer; password: string; requireUserPresence: boolean }): Promise<ImportedCertificate> {
+  async importPkcs12(o: { keyId: string; data: Buffer; password: string }): Promise<ImportedCertificate> {
     const file = this.openPkcs12(o.data, o.password);
     if (this.keys.has(o.keyId)) throw Object.assign(new Error('exists'), { code: 'E_EXISTS' });
     const info: KeyInfo = {
@@ -79,10 +81,18 @@ export class MemoryKeyStore implements KeyStore {
       algorithm: 'RS256',
       spki: new X509Certificate(file.chain[0]).publicKey.export({ format: 'der', type: 'spki' }),
       protection: 'software',
-      userPresence: o.requireUserPresence && (this.options.presence ?? true),
+      userPresence: true, // the password approves each use, like the native module
     };
-    this.keys.set(o.keyId, { info, privateKey: file.privateKey });
+    this.keys.set(o.keyId, { info, privateKey: file.privateKey, password: o.password });
     return { chain: [...file.chain], algorithm: 'RS256', keyBits: 2048, key: { ...info } };
+  }
+
+  async verifyCertificatePassword(keyId: string, password: string): Promise<void> {
+    const entry = this.keys.get(keyId);
+    if (!entry) throw Object.assign(new Error('not found'), { code: 'E_NOT_FOUND' });
+    if (entry.password === undefined || entry.password !== password) {
+      throw Object.assign(new Error('wrong certificate password'), { code: 'E_BAD_PASSWORD' });
+    }
   }
 
   private openPkcs12(data: Buffer, password: string): FakePkcs12 {
@@ -114,10 +124,17 @@ export class MemoryKeyStore implements KeyStore {
     return entry ? { ...entry.info } : null;
   }
 
-  async sign(keyId: string, message: Buffer, reason: string): Promise<Buffer> {
+  /** Certificate passwords given to sign(), right or wrong. */
+  readonly passwords: string[] = [];
+
+  async sign(keyId: string, message: Buffer, reason: string, _parent?: Buffer, password?: string): Promise<Buffer> {
     const entry = this.keys.get(keyId);
     if (!entry) throw Object.assign(new Error('not found'), { code: 'E_NOT_FOUND' });
-    if (entry.info.userPresence) {
+    if (entry.password !== undefined) {
+      // A certificate key: the password, not an OS prompt (certificate-password-pairing-plan.md §4).
+      if (password !== undefined) this.passwords.push(password);
+      if (password !== entry.password) throw Object.assign(new Error('wrong certificate password'), { code: 'E_BAD_PASSWORD' });
+    } else if (entry.info.userPresence) {
       this.prompts.push(reason);
       if (this.cancelNextPrompt) {
         this.cancelNextPrompt = false;
