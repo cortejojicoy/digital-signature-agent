@@ -61,6 +61,8 @@ export interface PairingClaim {
   key_source?: 'platform' | 'pkcs12';
   /** key_source 'pkcs12': base64 DER, leaf first; the leaf's key is identity_public_key. */
   certificate_chain?: string[];
+  /** What approves each use: the OS prompt, or the certificate's password (pkcs12 only). Older agents omit it. */
+  presence_method?: 'os' | 'certificate_password';
   attestation: { format: string; statement: string; chain: string[] } | null;
   device: {
     platform: string;
