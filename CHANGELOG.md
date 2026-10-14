@@ -8,6 +8,10 @@ When tagging a release, rename `Unreleased` to the version, e.g.
 
 ## Unreleased
 
+- With a software certificate, **Open in Kukux Sign Agent** pairs without an address or code: check the app and enter your certificate's password
+- Your certificate's password approves pairing and every signing, in place of Touch ID / Windows Hello. After 5 wrong passwords the agent waits before the next try
+- Switching key storage unpairs the apps that used the other storage and deletes their keys, after asking. The imported certificate stays unless you remove it too
+- Certificates imported by earlier test builds need to be imported again
 - Choose where your signing key lives: this computer's security chip (Secure Enclave / TPM), or a software certificate
 - Import a .p12 or .pfx certificate, such as your PNPKI certificate: see its name, issuer and expiry before importing. Its key is locked to this computer and can't be exported (macOS 15 or later, Windows)
 - Pair apps with your certificate: the app checks its issuer and that it hasn't been revoked

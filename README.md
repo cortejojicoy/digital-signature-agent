@@ -51,11 +51,13 @@ How macOS keys are stored depends on the build:
 
 On first launch the agent asks where the signing key lives: the security
 chip (above), or a **software certificate** imported from a PKCS#12 file
-(`.p12` / `.pfx`, e.g. PNPKI). An imported key is never exportable: on macOS
-(15 or later) it is sealed to a Secure Enclave key that needs Touch ID or the
-password to open, and on Windows it goes into the TPM, or Windows key storage
-with a password on each use. Design and server checks:
-[pkcs12-key-storage-plan.md](pkcs12-key-storage-plan.md). Test fixtures come
+(`.p12` / `.pfx`, e.g. PNPKI). An imported key is never exportable. It is
+encrypted with the certificate's own password, which approves pairing and
+every signing instead of Touch ID / Windows Hello, inside a layer bound to
+this computer (the Secure Enclave on macOS 15+, DPAPI on Windows). The agent
+holds one storage's pairings at a time: switching unpairs the other's apps.
+Design and server checks: [pkcs12-key-storage-plan.md](pkcs12-key-storage-plan.md)
+and [certificate-password-pairing-plan.md](certificate-password-pairing-plan.md). Test fixtures come
 from `scripts/make-pkcs12-fixtures.sh`; real certificates never go in the
 repo (`.gitignore` excludes `*.p12` / `*.pfx`).
 
