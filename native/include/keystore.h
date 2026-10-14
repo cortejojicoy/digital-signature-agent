@@ -57,9 +57,9 @@ struct Pkcs12Contents {
 struct ImportOptions {
     std::string keyId;
     Bytes data;                 // the file, at most kMaxPkcs12Size bytes
+    // Opens the file, and from then on unlocks the imported key on every use
+    // (certificate-password-pairing-plan.md §4.2).
     std::string password;
-    bool requireUserPresence = true;
-    bool biometryOnly = false;  // macOS, as in CreateOptions
 };
 
 struct ImportedCertificate {
@@ -125,9 +125,15 @@ public:
 
     // Opens a PKCS#12 file and returns its certificates. Persists nothing.
     virtual Pkcs12Contents inspectPkcs12(const Bytes& data, const std::string& password) = 0;
-    // Imports the file's private key under opts.keyId, never exportable.
-    // sign / find / remove / privateKeyExportable then work on it as on any key.
+    // Imports the file's private key under opts.keyId, never exportable,
+    // encrypted with the file's password. find / remove / privateKeyExportable
+    // work on it as on any key; sign() refuses it (E_BAD_PASSWORD): use
+    // signCertificate with the password.
     virtual ImportedCertificate importPkcs12(const ImportOptions& opts) = 0;
+    // Signs SHA-256(message) with an imported key. E_BAD_PASSWORD for a wrong password.
+    virtual Bytes signCertificate(const std::string& keyId, const Bytes& message, const std::string& password) = 0;
+    // Throws E_BAD_PASSWORD unless `password` unlocks the imported key.
+    virtual void verifyCertificatePassword(const std::string& keyId, const std::string& password) = 0;
 
     // Test hook: true if the private key can be exported. Must always be false.
     virtual bool privateKeyExportable(const std::string& keyId) = 0;

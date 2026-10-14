@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import type { JobState, JobView } from '../../shared/ipc';
-import { Icon } from '../icons';
+import { Icon, IconButton } from '../icons';
 import { currentPlatform, deviceTypeLabel, presenceLabel, protectionLabel } from '../labels';
 
 const ARM_DELAY_MS = 1000;
@@ -51,11 +51,25 @@ export function ConfirmView({ jobId }: { jobId: string }) {
   const [job, setJob] = useState<JobView | null | undefined>(undefined);
   const [state, setState] = useState<JobState | null>(null);
   const armed = useArmedAfterFocus();
+  // Certificate pairings approve with the certificate password (certificate-password-pairing-plan.md §4).
+  const [password, setPassword] = useState('');
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [retryAt, setRetryAt] = useState<number | null>(null);
+  const waiting = useCountdown(retryAt);
 
   useEffect(() => {
     void window.agent.getJob(jobId).then(setJob);
     return window.agent.onJobState((s) => {
-      if (s.id === jobId) setState(s);
+      if (s.id !== jobId) return;
+      if (s.state === 'password_rejected') {
+        // Ask again in this window; the job is still open on the server.
+        setState(null);
+        setPassword('');
+        setPasswordError(s.error);
+        setRetryAt(s.retryAt ? Date.parse(s.retryAt) : null);
+        return;
+      }
+      setState(s);
     });
   }, [jobId]);
 
@@ -78,6 +92,15 @@ export function ConfirmView({ jobId }: { jobId: string }) {
     return (
       <main className="page">
         <section className="card center" aria-live="polite">
+          {state.state === 'signing' && (
+            <>
+              <div className="spinner" aria-hidden="true" />
+              <h1>{job.login ? 'Signing in…' : 'Signing…'}</h1>
+              <p className="muted">
+                {words.waiting} “{job.login ? job.serverName : job.documentTitle}” with your certificate
+              </p>
+            </>
+          )}
           {state.state === 'waiting_for_os_prompt' && (
             <>
               <div className="spinner" aria-hidden="true" />
@@ -112,11 +135,29 @@ export function ConfirmView({ jobId }: { jobId: string }) {
   }
 
   const decline = () => void window.agent.rejectJob(jobId);
+  const needsPassword = job.passwordRequired;
+  const canApprove = armed && (!needsPassword || (password !== '' && waiting === 0));
   // A pointer click only (detail > 0): Enter / Space typed into a
   // window that just took focus must never approve.
   const approve = (e: { detail: number }) => {
-    if (e.detail > 0) void window.agent.approveJob(jobId);
+    if (e.detail <= 0 || !canApprove) return;
+    if (needsPassword) {
+      setPasswordError(null);
+      void window.agent.approveJob(jobId, { password });
+      setPassword('');
+    } else {
+      void window.agent.approveJob(jobId);
+    }
   };
+  const passwordField = needsPassword && (
+    <CertificatePassword
+      value={password}
+      onChange={setPassword}
+      error={passwordError}
+      waitSeconds={waiting}
+      certificateName={job.certificateName}
+    />
+  );
 
   if (job.login) {
     return (
@@ -148,10 +189,13 @@ export function ConfirmView({ jobId }: { jobId: string }) {
             )}
             <dt>Key</dt>
             <dd>
-              {deviceTypeLabel(job.deviceType)} · {protectionLabel(job.protection)} · {presenceLabel(platform, job.userPresence)}
+              {deviceTypeLabel(job.deviceType)} ·{' '}
+              {job.passwordRequired ? 'Certificate · certificate password' : `${protectionLabel(job.protection)} · ${presenceLabel(platform, job.userPresence)}`}
             </dd>
           </dl>
         </section>
+
+        {passwordField}
 
         <p className="muted small">Approve only if the code matches and you just chose Sign in in your browser.</p>
 
@@ -160,7 +204,7 @@ export function ConfirmView({ jobId }: { jobId: string }) {
             <Icon name="x" />
             Deny
           </button>
-          <button type="button" className="button button-primary button-icon" disabled={!armed} onClick={approve}>
+          <button type="button" className="button button-primary button-icon" disabled={!canApprove} onClick={approve}>
             <Icon name="check" />
             Approve
           </button>
@@ -204,10 +248,13 @@ export function ConfirmView({ jobId }: { jobId: string }) {
           <dd>{PURPOSES[job.purpose] ?? job.purpose}</dd>
           <dt>Key</dt>
           <dd>
-            {deviceTypeLabel(job.deviceType)} · {protectionLabel(job.protection)} · {presenceLabel(platform, job.userPresence)}
+            {deviceTypeLabel(job.deviceType)} ·{' '}
+            {job.passwordRequired ? 'Certificate · certificate password' : `${protectionLabel(job.protection)} · ${presenceLabel(platform, job.userPresence)}`}
           </dd>
         </dl>
       </section>
+
+      {passwordField}
 
       <p className="muted small">Approve only if you just started this in your browser.</p>
 
@@ -216,11 +263,82 @@ export function ConfirmView({ jobId }: { jobId: string }) {
           <Icon name="x" />
           Decline
         </button>
-        <button type="button" className="button button-primary button-icon" disabled={!armed} onClick={approve}>
+        <button type="button" className="button button-primary button-icon" disabled={!canApprove} onClick={approve}>
           <Icon name="check" />
-          Approve
+          {needsPassword ? 'Sign' : 'Approve'}
         </button>
       </div>
     </main>
   );
 }
+
+/** Seconds until `until` (a timestamp), ticking down; 0 once it has passed. */
+function useCountdown(until: number | null): number {
+  const left = () => (until ? Math.max(0, Math.ceil((until - Date.now()) / 1000)) : 0);
+  const [seconds, setSeconds] = useState(left);
+  useEffect(() => {
+    setSeconds(left());
+    if (!until) return;
+    const timer = setInterval(() => {
+      const next = left();
+      setSeconds(next);
+      if (next === 0) clearInterval(timer);
+    }, 1000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [until]);
+  return seconds;
+}
+
+/**
+ * The certificate password, in place of Touch ID / Hello. Not in a form:
+ * Enter never approves here, only a click on Sign.
+ */
+function CertificatePassword({
+  value,
+  onChange,
+  error,
+  waitSeconds,
+  certificateName,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  error: string | null;
+  waitSeconds: number;
+  certificateName?: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <section className="card">
+      <label className="field">
+        <span>Certificate password{certificateName ? ` · ${certificateName}` : ''}</span>
+        <div className="password-row">
+          <input
+            type={show ? 'text' : 'password'}
+            autoComplete="off"
+            spellCheck={false}
+            value={value}
+            disabled={waitSeconds > 0}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.preventDefault();
+            }}
+            autoFocus
+          />
+          <IconButton
+            icon={show ? 'eyeOff' : 'eye'}
+            label={show ? 'Hide password' : 'Show password'}
+            tip="above"
+            onClick={() => setShow((v) => !v)}
+          />
+        </div>
+      </label>
+      {error && (
+        <p className="error small" role="alert">
+          {waitSeconds > 0 ? `${error.replace(/ Try again in .*$/, '')} Try again in ${waitSeconds} s.` : error}
+        </p>
+      )}
+    </section>
+  );
+}
+

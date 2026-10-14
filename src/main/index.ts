@@ -32,7 +32,9 @@ import {
   type JobState,
   type JobView,
   type KeyStorageView,
+  type PairingPreviewResult,
   type PairingProgressView,
+  type SwitchResultView,
   type PairingResult,
   type StatusView,
   type UpdateView,
@@ -40,7 +42,7 @@ import {
 import { Agent, type CertificateSummary } from './agent';
 import { CertificateError, CertificateStore } from './certificates';
 import { APP_ORIGIN, appUrl, handleAppScheme, registerAppScheme } from './app-protocol';
-import type { ConfirmRequest, JobOutcome } from './jobs';
+import type { Approval, ConfirmRequest, JobOutcome, RetryReason } from './jobs';
 import { loadNativeKeyStore, type Capabilities, type KeySource, type Sealer } from './keystore';
 import { PairingError, type PairingProgress } from './pairing';
 import { SCHEME, linkFromArgv } from './protocol';
@@ -102,7 +104,7 @@ function main(): void {
   interface PendingConfirm {
     request: ConfirmRequest;
     window: BrowserWindow;
-    resolve: (approved: boolean) => void;
+    resolve: (answer: Approval) => void;
     decided: boolean;
   }
   const confirms = new Map<string, PendingConfirm>();
@@ -172,7 +174,10 @@ function main(): void {
       parentWindow: () => activeConfirm?.window.getNativeWindowHandle(),
       onPairLink: (link) => {
         const win = showMainWindow();
-        const send = () => win.webContents.send(IPC.pairPrefill, { origin: link.origin, code: link.code });
+        // Certificate mode pairs on the password screen, without address or code fields
+        // (certificate-password-pairing-plan.md §3.1).
+        const certificate = settings?.get().keyStorage === 'pkcs12';
+        const send = () => win.webContents.send(IPC.pairPrefill, { origin: link.origin, code: link.code, certificate });
         if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send);
         else send();
       },
@@ -234,7 +239,18 @@ function main(): void {
     return mainWindow;
   }
 
-  function openConfirm(request: ConfirmRequest): Promise<boolean> {
+  function openConfirm(request: ConfirmRequest, retry?: RetryReason): Promise<Approval> {
+    // A wrong certificate password: ask again in the window that's already open (§4.3).
+    if (retry) {
+      const pending = confirms.get(request.job.uuid);
+      if (!pending || pending.window.isDestroyed()) return Promise.resolve(false);
+      return new Promise((resolve) => {
+        pending.resolve = resolve;
+        pending.decided = false;
+        if (activeConfirm === pending) activeConfirm = null;
+        sendJobState(request.job.uuid, { state: 'password_rejected', error: retry.error, code: retry.code, retryAt: retry.retryAt });
+      });
+    }
     return new Promise((resolve) => {
       const window = new BrowserWindow({
         width: WINDOW_WIDTH,
@@ -271,18 +287,19 @@ function main(): void {
     });
   }
 
-  function decide(jobId: string, approved: boolean): void {
+  function decide(jobId: string, approved: boolean, password?: string): void {
     const pending = confirms.get(jobId);
     if (!pending || pending.decided) return;
     pending.decided = true;
     if (approved) {
-      // Keep the window open as the parent of the Touch ID / Hello prompt.
+      // Keep the window open as the parent of the Touch ID / Hello prompt,
+      // or to ask again if the certificate password is wrong.
       activeConfirm = pending;
-      sendJobState(jobId, { state: 'waiting_for_os_prompt' });
+      sendJobState(jobId, { state: password === undefined ? 'waiting_for_os_prompt' : 'signing' });
     } else if (!pending.window.isDestroyed()) {
       pending.window.close();
     }
-    pending.resolve(approved);
+    pending.resolve(approved ? { approved, password } : false);
   }
 
   function sendJobState(jobId: string, state: JobState): void {
@@ -510,7 +527,37 @@ function main(): void {
       };
     });
 
-    handle(IPC.startPairing, async (input: { origin: string; code: string }): Promise<PairingResult> => {
+    handle(IPC.previewPairing, async (input: { origin: string; code: string }): Promise<PairingPreviewResult> => {
+      try {
+        const preview = await agent!.previewPairing(String(input.origin), String(input.code));
+        return {
+          ok: true,
+          preview: {
+            serverName: preview.serverName,
+            origin: preview.origin,
+            host: new URL(preview.origin).host,
+            userName: preview.userName,
+            certificateName: preview.certificateName ?? '',
+            repair: preview.repair,
+          },
+        };
+      } catch (err) {
+        if (err instanceof PairingError) {
+          devicesPage = err.manageUrl ?? null;
+          return { ok: false, error: err.message, code: err.code, manageUrl: err.manageUrl };
+        }
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    });
+
+    handle(IPC.switchKeyStorage, async (storage: unknown, opts?: { removeCertificate?: unknown }): Promise<SwitchResultView> => {
+      const next: KeySource = storage === 'pkcs12' ? 'pkcs12' : 'platform';
+      const result = await agent!.switchKeyStorage(next, { removeCertificate: opts?.removeCertificate === true });
+      await setKeyStorage(next);
+      return result;
+    });
+
+    handle(IPC.startPairing, async (input: { origin: string; code: string; password?: string }): Promise<PairingResult> => {
       pairingAbort?.abort();
       const abort = new AbortController();
       pairingAbort = abort;
@@ -518,12 +565,14 @@ function main(): void {
       try {
         let rebound = false;
         const server = await agent!.pair(input.origin, input.code, {
+          password: typeof input.password === 'string' ? input.password : undefined,
           signal: abort.signal,
           onProgress: (p) => {
             if (p.stage === 'paired') rebound = p.rebound;
             mainWindow?.webContents.send(IPC.pairingProgress, toProgressView(p));
           },
-          confirmRepair: () =>
+          // The password screen already said "pairing again replaces it" (§3.5): no second question.
+          confirmRepair: typeof input.password === 'string' ? undefined : () =>
             new Promise<boolean>((resolve) => {
               repairAnswer = resolve;
               abort.signal.addEventListener('abort', () => resolve(false), { once: true });
@@ -583,10 +632,13 @@ function main(): void {
             : undefined,
         transfer: job.purpose === 'transfer' && job.transfer ? { name: job.transfer.name, device: job.transfer.device } : undefined,
         certificateName: agent!.servers().find((s) => s.id === server.id)?.certificateName,
+        passwordRequired: server.keySource === 'pkcs12',
       };
     });
 
-    handle(IPC.approveJob, (id: string) => decide(id, true));
+    handle(IPC.approveJob, (id: string, opts?: { password?: unknown }) =>
+      decide(id, true, typeof opts?.password === 'string' ? opts.password : undefined),
+    );
     handle(IPC.rejectJob, (id: string) => decide(id, false));
     handle(IPC.unpair, (serverId: string, opts?: { offline?: unknown }) =>
       agent!.unpair(String(serverId), { offline: opts?.offline === 'remove' ? 'remove' : 'ask' }),
@@ -636,7 +688,9 @@ function main(): void {
       try {
         const imported = await agent!.importCertificate(data, String(input?.password ?? ''));
         dropCertificateFile();
-        await setKeyStorage('pkcs12');
+        // Select it only when nothing would be unpaired; otherwise the chooser
+        // asks first (certificate-password-pairing-plan.md §5.2).
+        if (agent!.pairingsOutside('pkcs12').length === 0) await setKeyStorage('pkcs12');
         const summary = agent!.certificateSummaries().find((c) => c.id === imported.id)!;
         return { ok: true, certificate: certificateView(summary) };
       } catch (err) {

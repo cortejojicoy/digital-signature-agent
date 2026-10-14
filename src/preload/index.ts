@@ -12,11 +12,20 @@ function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
 
 const bridge: AgentBridge = {
   getStatus: () => ipcRenderer.invoke(IPC.getStatus),
-  startPairing: (input) => ipcRenderer.invoke(IPC.startPairing, { origin: String(input.origin), code: String(input.code) }),
+  startPairing: (input) =>
+    ipcRenderer.invoke(IPC.startPairing, {
+      origin: String(input.origin),
+      code: String(input.code),
+      password: typeof input.password === 'string' ? input.password : undefined,
+    }),
+  previewPairing: (input) => ipcRenderer.invoke(IPC.previewPairing, { origin: String(input.origin), code: String(input.code) }),
   cancelPairing: () => ipcRenderer.invoke(IPC.cancelPairing),
   confirmRepair: (repair) => ipcRenderer.invoke(IPC.confirmRepair, repair === true),
   getJob: (id) => ipcRenderer.invoke(IPC.getJob, String(id)),
-  approveJob: (id) => ipcRenderer.invoke(IPC.approveJob, String(id)),
+  approveJob: (id, opts) =>
+    ipcRenderer.invoke(IPC.approveJob, String(id), {
+      password: typeof opts?.password === 'string' ? opts.password : undefined,
+    }),
   rejectJob: (id) => ipcRenderer.invoke(IPC.rejectJob, String(id)),
   unpair: (serverId, opts) =>
     ipcRenderer.invoke(IPC.unpair, String(serverId), { offline: opts?.offline === 'remove' ? 'remove' : 'ask' }),
@@ -35,6 +44,10 @@ const bridge: AgentBridge = {
   importCertificate: (input) =>
     ipcRenderer.invoke(IPC.importCertificate, { token: String(input.token), password: String(input.password) }),
   removeCertificate: (id) => ipcRenderer.invoke(IPC.removeCertificate, String(id)),
+  switchKeyStorage: (storage, opts) =>
+    ipcRenderer.invoke(IPC.switchKeyStorage, storage === 'pkcs12' ? 'pkcs12' : 'platform', {
+      removeCertificate: opts?.removeCertificate === true,
+    }),
   onStatusChanged: (cb) => subscribe(IPC.statusChanged, cb),
   onPairingProgress: (cb) => subscribe(IPC.pairingProgress, cb),
   onPairPrefill: (cb) => subscribe(IPC.pairPrefill, cb),

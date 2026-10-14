@@ -344,3 +344,44 @@ public func kse_unwrap(
         return status(for: error)
     }
 }
+
+// ── AES-256-GCM for the certificate password layer (certificate-password-pairing-plan.md §6.1) ──
+
+/// Seals with a 32-byte key: nonce (12) | ciphertext | tag (16).
+@_cdecl("kse_gcm_seal")
+public func kse_gcm_seal(
+    _ key: UnsafePointer<UInt8>,
+    _ plain: UnsafePointer<UInt8>,
+    _ plainCount: Int,
+    _ out: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>,
+    _ outLen: UnsafeMutablePointer<Int>
+) -> Int32 {
+    do {
+        let box = try AES.GCM.seal(Data(bytes: plain, count: plainCount), using: SymmetricKey(data: Data(bytes: key, count: 32)))
+        guard let combined = box.combined else { return kFailed }
+        copyOut(combined, out, outLen)
+        return kOK
+    } catch {
+        return kFailed
+    }
+}
+
+/// Opens a kse_gcm_seal box. kFailed when the tag doesn't verify (wrong key).
+@_cdecl("kse_gcm_open")
+public func kse_gcm_open(
+    _ key: UnsafePointer<UInt8>,
+    _ box: UnsafePointer<UInt8>,
+    _ boxCount: Int,
+    _ out: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>,
+    _ outLen: UnsafeMutablePointer<Int>
+) -> Int32 {
+    do {
+        let sealed = try AES.GCM.SealedBox(combined: Data(bytes: box, count: boxCount))
+        var plain = try AES.GCM.open(sealed, using: SymmetricKey(data: Data(bytes: key, count: 32)))
+        copyOut(plain, out, outLen)
+        plain.resetBytes(in: 0..<plain.count)
+        return kOK
+    } catch {
+        return kFailed
+    }
+}

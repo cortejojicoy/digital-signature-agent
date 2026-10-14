@@ -771,3 +771,24 @@ div.error > p {
   user-select: text;
   word-break: break-word;
 }
+
+/* ── Switching key storage (certificate-password-pairing-plan.md §5) ── */
+
+.switch-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.check-row input {
+  accent-color: var(--accent);
+}

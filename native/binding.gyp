@@ -4,7 +4,8 @@
       "target_name": "keystore",
       "sources": [
         "src/addon.cc",
-        "src/common/encoding.cc"
+        "src/common/encoding.cc",
+        "src/common/CertKeyFile.cc"
       ],
       "include_dirs": [
         "include",
@@ -19,6 +20,7 @@
           "sources": [
             "src/mac/SecureEnclaveKeyStore.mm",
             "src/mac/Pkcs12.mm",
+            "src/mac/CertCrypto.mm",
             "src/mac/DeviceInfo.mm",
             "src/mac/Hash.cc"
           ],
@@ -51,6 +53,7 @@
             "src/win/HelloKeyStore.cpp",
             "src/win/PcpKeyStore.cpp",
             "src/win/Pkcs12Import.cpp",
+            "src/win/CertCrypto.cpp",
             "src/win/DeviceInfo.cpp",
             "src/win/Hash.cpp"
           ],

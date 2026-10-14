@@ -2,7 +2,7 @@
 // Shown on first launch, and from Change next to Key storage.
 import { useState } from 'react';
 
-import type { KeySourceView, StatusView } from '../../shared/ipc';
+import type { KeySourceView, StatusView, SwitchResultView } from '../../shared/ipc';
 import { Icon, IconButton } from '../icons';
 import { formatDate, keyStorageLabel } from '../labels';
 
@@ -19,12 +19,22 @@ export function KeyStorageView({ status, onImport, onDone, onCancel }: Props) {
   const storage = status.keyStorage;
   const [choice, setChoice] = useState<KeySourceView>(storage.selected ?? (storage.platform.available ? 'platform' : 'pkcs12'));
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [removeCertificate, setRemoveCertificate] = useState(false);
+  const [result, setResult] = useState<SwitchResultView | null>(null);
   const chip = keyStorageLabel(status.platform, 'platform');
   const isMac = status.platform !== 'windows';
+  // One key storage at a time: switching unpairs the other one's apps
+  // (certificate-password-pairing-plan.md §5).
+  const leaving = status.servers.filter((s) => s.keySource !== choice);
 
   const proceed = async () => {
     if (choice === 'pkcs12' && !storage.certificate) {
       onImport();
+      return;
+    }
+    if (leaving.length > 0) {
+      setConfirming(true);
       return;
     }
     setBusy(true);
@@ -35,6 +45,80 @@ export function KeyStorageView({ status, onImport, onDone, onCancel }: Props) {
       setBusy(false);
     }
   };
+
+  const switchNow = async () => {
+    setBusy(true);
+    try {
+      const done = await window.agent.switchKeyStorage(choice, { removeCertificate });
+      if (done.queued.length > 0 || done.failed.length > 0) setResult(done);
+      else onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (result) {
+    return (
+      <main className="page">
+        <section className="card center">
+          <div className="big-check" aria-hidden="true">✓</div>
+          <h1>Switched to {choice === 'pkcs12' ? 'your certificate' : chip}</h1>
+          {result.queued.length > 0 && (
+            <p className="muted">
+              {result.queued.join(', ')} couldn't be reached: removed from this computer, and the agent tells{' '}
+              {result.queued.length === 1 ? 'it' : 'them'} once {result.queued.length === 1 ? "it's" : "they're"} back.
+            </p>
+          )}
+          {result.failed.length > 0 && <p className="error">Couldn't remove: {result.failed.join(', ')}.</p>}
+          <IconButton icon="check" label="Done" variant="primary" tip="above" onClick={onDone} autoFocus />
+        </section>
+      </main>
+    );
+  }
+
+  if (confirming) {
+    const from = choice === 'pkcs12' ? `the ${chip}` : 'your certificate';
+    return (
+      <main className="page">
+        <header className="page-header">
+          <p className="eyebrow">Key storage</p>
+          <h1>Switch to {choice === 'pkcs12' ? 'your certificate' : `the ${chip}`}?</h1>
+        </header>
+        <section className="card">
+          <p className="lead">
+            {leaving.length === 1 ? 'This app is' : 'These apps are'} paired with {from}. Switching unpairs{' '}
+            {leaving.length === 1 ? 'it' : 'them'} and deletes {leaving.length === 1 ? 'its keys' : 'their keys'} from this
+            computer:
+          </p>
+          <ul className="switch-list">
+            {leaving.map((s) => (
+              <li key={s.id}>
+                <strong>{s.name}</strong> <span className="mono muted small">{s.origin}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="muted small">Pair them again afterwards with “Pair this computer” on each app.</p>
+          {choice === 'platform' && storage.certificate && (
+            <label className="check-row small">
+              <input type="checkbox" checked={removeCertificate} onChange={(e) => setRemoveCertificate(e.target.checked)} />
+              Also remove the certificate ({storage.certificate.commonName}) from this computer
+            </label>
+          )}
+        </section>
+        <div className="actions">
+          <IconButton icon="back" label="Cancel" tip="above" disabled={busy} onClick={() => setConfirming(false)} />
+          <IconButton
+            icon="unlink"
+            label={busy ? 'Unpairing…' : 'Unpair & switch'}
+            variant="primary"
+            tip="above"
+            disabled={busy}
+            onClick={() => void switchNow()}
+          />
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="page">

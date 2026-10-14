@@ -63,21 +63,26 @@ export interface KeyStore {
   capabilities(): Promise<Capabilities>;
   createKey(o: { keyId: string; requireUserPresence: boolean; biometryOnly?: boolean }): Promise<KeyInfo>;
   findKey(keyId: string): Promise<KeyInfo | null>;
-  /** Signs `message` (the addon hashes it). ES256 → DER, RS256 → PKCS#1 v1.5. */
-  sign(keyId: string, message: Buffer, reason: string, parentWindow?: Buffer): Promise<Buffer>;
+  /**
+   * Signs `message` (the addon hashes it). ES256 → DER, RS256 → PKCS#1 v1.5.
+   * An imported certificate key needs `password`, which unlocks it instead of
+   * Touch ID / Hello (certificate-password-pairing-plan.md §4); without it, or
+   * with a wrong one, E_BAD_PASSWORD.
+   */
+  sign(keyId: string, message: Buffer, reason: string, parentWindow?: Buffer, password?: string): Promise<Buffer>;
   attest(keyId: string): Promise<AttestationResult | null>;
   deleteKey(keyId: string): Promise<void>;
   deviceInfo(salt: string): Promise<DeviceInfo>;
   /** Opens a .p12 / .pfx and returns its certificates. Persists nothing. */
   inspectPkcs12(data: Buffer, password: string): Promise<Pkcs12Contents>;
-  /** Imports its private key under `keyId`, never exportable. The key never reaches JS. */
-  importPkcs12(o: {
-    keyId: string;
-    data: Buffer;
-    password: string;
-    requireUserPresence: boolean;
-    biometryOnly?: boolean;
-  }): Promise<ImportedCertificate>;
+  /**
+   * Imports its private key under `keyId`, never exportable, encrypted with
+   * the file's password: the same password unlocks it on every use. The key
+   * never reaches JS.
+   */
+  importPkcs12(o: { keyId: string; data: Buffer; password: string }): Promise<ImportedCertificate>;
+  /** E_BAD_PASSWORD unless `password` unlocks the imported key. Signs nothing. */
+  verifyCertificatePassword(keyId: string, password: string): Promise<void>;
 }
 
 /** Error codes set on `err.code` by the native module. */

@@ -35,6 +35,10 @@ export interface StoredCertificate {
   /** Ends at a known Philippine PKI root. */
   pnpki: boolean;
   importedAt: string;
+  /** Wrong passwords in a row (certificate-password-pairing-plan.md §4.3). */
+  failedAttempts?: number;
+  /** ISO time before which the password isn't tried again. */
+  lockedUntil?: string;
 }
 
 export type CertificateWarningCode = 'expires_soon' | 'incomplete_chain' | 'not_pnpki';
@@ -75,15 +79,40 @@ export type CertificateErrorCode =
   | 'E_CANCELLED'
   // Managing imported certificates.
   | 'in_use'
-  | 'not_found';
+  | 'not_found'
+  // Using one: too many wrong passwords, wait until retryAt.
+  | 'E_LOCKED';
 
 export class CertificateError extends Error {
   constructor(
     readonly code: CertificateErrorCode,
     message: string,
+    /** E_BAD_PASSWORD / E_LOCKED: when the next try is allowed, if it has to wait. */
+    readonly retryAt?: string,
   ) {
     super(message);
   }
+}
+
+// ── Wrong-password back-off (certificate-password-pairing-plan.md §4.3) ──
+
+const FREE_ATTEMPTS = 5;
+const FIRST_LOCK_MS = 30_000;
+const MAX_LOCK_MS = 15 * 60_000;
+
+/** After 5 wrong passwords in a row, wait 30 s, doubling to 15 min. */
+export function lockAfter(failedAttempts: number, now: number): string | undefined {
+  if (failedAttempts < FREE_ATTEMPTS) return undefined;
+  const ms = Math.min(FIRST_LOCK_MS * 2 ** (failedAttempts - FREE_ATTEMPTS), MAX_LOCK_MS);
+  return new Date(now + ms).toISOString();
+}
+
+/** "Try again in 30 seconds" / "in 2 minutes". */
+export function waitWords(retryAt: string, now: number): string {
+  const seconds = Math.max(1, Math.ceil((Date.parse(retryAt) - now) / 1000));
+  if (seconds < 60) return `${seconds} ${seconds === 1 ? 'second' : 'seconds'}`;
+  const minutes = Math.ceil(seconds / 60);
+  return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
 }
 
 /** A native import / inspect failure in the user's words (pkcs12-key-storage-plan.md §7.2). */
@@ -339,6 +368,22 @@ export class CertificateStore {
   async remove(id: string): Promise<void> {
     this.certificates = this.certificates.filter((c) => c.id !== id);
     await this.flush();
+  }
+
+  /** Records a password attempt; returns the certificate as stored now. */
+  async recordPassword(id: string, correct: boolean, now = Date.now()): Promise<StoredCertificate | null> {
+    const found = this.certificates.find((c) => c.id === id);
+    if (!found) return null;
+    if (correct) {
+      if (!found.failedAttempts && !found.lockedUntil) return this.get(id);
+      delete found.failedAttempts;
+      delete found.lockedUntil;
+    } else {
+      found.failedAttempts = (found.failedAttempts ?? 0) + 1;
+      found.lockedUntil = lockAfter(found.failedAttempts, now);
+    }
+    await this.flush();
+    return this.get(id);
   }
 
   private async flush(): Promise<void> {

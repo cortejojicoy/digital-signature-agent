@@ -9,14 +9,23 @@ import {
   certificateErrorFrom,
   describeChain,
   newCertificateIds,
+  waitWords,
   type CertificateDescription,
   type CertificateStore,
   type StoredCertificate,
 } from './certificates';
 import { detectDeviceType, isDeviceType, type DeviceType } from './device-type';
-import { JobRunner, type ConfirmRequest, type JobOutcome } from './jobs';
+import { JobRunner, type Approval, type ConfirmRequest, type JobOutcome, type RetryReason } from './jobs';
 import type { Algorithm, Capabilities, KeySource, KeyStore } from './keystore';
-import { deleteKeys, pair, PairingError, type PairOptions } from './pairing';
+import {
+  deleteKeys,
+  pair,
+  PairingError,
+  previewPairing,
+  type PairingDeps,
+  type PairingPreview,
+  type PairOptions,
+} from './pairing';
 import { normalizeOrigin, normalizeUserCode, parseLink, type OriginPolicy, type PairLink, type PresenceLink } from './protocol';
 import { keySourceOf, ownedKeyIds, type PairedServer, type PendingRevoke, type Store } from './store';
 
@@ -31,7 +40,7 @@ export interface AgentOptions extends OriginPolicy {
   certificates?: CertificateStore;
   /** The chosen key storage (settings). Without it, pairings use the platform key. */
   keyStorage?(): KeySource | null;
-  confirm(request: ConfirmRequest): Promise<boolean>;
+  confirm(request: ConfirmRequest, retry?: RetryReason): Promise<Approval>;
   parentWindow?(): Buffer | undefined;
   /** A pair link arrived: the UI should show it prefilled for the user to confirm. */
   onPairLink?(link: PairLink): void;
@@ -55,6 +64,21 @@ export interface ServerSummary {
   keySource: KeySource;
   /** keySource 'pkcs12': the certificate's name, e.g. "Test UP 4". */
   certificateName?: string;
+}
+
+/** What switchKeyStorage did, by app name (certificate-password-pairing-plan.md §5.2). */
+export interface SwitchResult {
+  /** Revoked on the server, keys deleted. */
+  unpaired: string[];
+  /** Removed here; the revoke waits until the server can be reached. */
+  queued: string[];
+  /** Couldn't be removed: left as they were. */
+  failed: string[];
+}
+
+/** pair()'s options plus the certificate password (certificate-password-pairing-plan.md §3). */
+export interface AgentPairOptions extends PairOptions {
+  password?: string;
 }
 
 /** What the import screen previews (pkcs12-key-storage-plan.md §7.2). */
@@ -106,6 +130,8 @@ export class Agent {
       confirm: options.confirm,
       parentWindow: options.parentWindow,
       certificateName: (server) => this.certificateOf(server)?.commonName,
+      signIdentity: (server, message, reason, parentWindow, password) =>
+        this.signIdentity(server, message, reason, parentWindow, password),
       onUnauthorized: (server) => void this.forget(server),
     });
   }
@@ -250,8 +276,6 @@ export class Agent {
         keyId,
         data,
         password,
-        requireUserPresence: true,
-        biometryOnly: this.options.biometryOnly,
       });
     } catch (err) {
       throw certificateErrorFrom(err);
@@ -372,7 +396,42 @@ export class Agent {
     return changed;
   }
 
-  async pair(originInput: string, codeInput: string, opts: PairOptions = {}): Promise<PairedServer> {
+  /**
+   * The pairing screen for "Open in Kukux Sign Agent" in certificate mode
+   * (certificate-password-pairing-plan.md §3.2): who and what this pairs,
+   * from a lookup that changes nothing. Throws the same PairingErrors as pair().
+   */
+  async previewPairing(originInput: string, codeInput: string): Promise<PairingPreview & { certificateName?: string }> {
+    const { origin, code } = this.pairingInput(originInput, codeInput);
+    const certificate = this.pairingCertificate();
+    const preview = await previewPairing(this.pairingDeps(origin, certificate), code);
+    return { ...preview, certificateName: certificate?.commonName };
+  }
+
+  async pair(originInput: string, codeInput: string, opts: AgentPairOptions = {}): Promise<PairedServer> {
+    const { origin, code } = this.pairingInput(originInput, codeInput);
+    const certificate = this.pairingCertificate();
+
+    // An unpair that never reached this server still holds the computer
+    // there; finish it first, or a different account would be refused.
+    await this.retryRevokes(origin);
+
+    const { password, ...pairOptions } = opts;
+    const deps = this.pairingDeps(origin, certificate);
+    if (certificate) {
+      // The certificate password, not Touch ID, signs the registration proof.
+      deps.signIdentity = (keyId, message, reason) =>
+        this.withCertificatePassword(certificate.id, password, () =>
+          this.options.keystore.sign(keyId, message, reason, undefined, password),
+        );
+    }
+    const paired = await pair(deps, code, pairOptions);
+    await this.pruneCertificates(); // a re-pair may have left an old certificate unused
+    this.options.onServersChanged?.();
+    return paired;
+  }
+
+  private pairingInput(originInput: string, codeInput: string): { origin: string; code: string } {
     const origin = normalizeOrigin(originInput, this.policy);
     if (!origin) {
       throw new Error(
@@ -383,29 +442,105 @@ export class Agent {
     }
     const code = normalizeUserCode(codeInput);
     if (!code) throw new Error('Enter the 8-character code, e.g. K7QM-2XPD');
+    return { origin, code };
+  }
 
-    const certificate = this.pairingCertificate();
+  private pairingDeps(origin: string, certificate: StoredCertificate | null): PairingDeps {
+    return {
+      keystore: this.options.keystore,
+      store: this.options.store,
+      api: this.apiFor(origin),
+      agentVersion: this.options.agentVersion,
+      biometryOnly: this.options.biometryOnly,
+      certificate,
+      pollIntervalMs: this.options.pollIntervalMs,
+    };
+  }
 
-    // An unpair that never reached this server still holds the computer
-    // there; finish it first, or a different account would be refused.
-    await this.retryRevokes(origin);
+  // ── The certificate password (certificate-password-pairing-plan.md §4) ──
 
-    const paired = await pair(
-      {
-        keystore: this.options.keystore,
-        store: this.options.store,
-        api: this.apiFor(origin),
-        agentVersion: this.options.agentVersion,
-        biometryOnly: this.options.biometryOnly,
-        certificate,
-        pollIntervalMs: this.options.pollIntervalMs,
-      },
-      code,
-      opts,
+  /**
+   * Signs with a pairing's identity key: a certificate pairing needs its
+   * certificate's password (and counts wrong ones), a platform pairing the OS
+   * prompt. Throws CertificateError E_BAD_PASSWORD / E_LOCKED for the first.
+   */
+  async signIdentity(server: PairedServer, message: Buffer, reason: string, parentWindow?: Buffer, password?: string) {
+    if (keySourceOf(server) !== 'pkcs12') {
+      return this.options.keystore.sign(server.identityKeyId, message, reason, parentWindow);
+    }
+    const certificate = this.certificateOf(server);
+    if (!certificate) {
+      throw new CertificateError('not_found', 'The certificate this app was paired with is gone. Import it again and re-pair.');
+    }
+    return this.withCertificatePassword(certificate.id, password, () =>
+      this.options.keystore.sign(server.identityKeyId, message, reason, parentWindow, password),
     );
-    await this.pruneCertificates(); // a re-pair may have left an old certificate unused
+  }
+
+  /**
+   * Runs `use` with a certificate password, refusing while the certificate is
+   * locked after wrong passwords, and recording whether this one was right (§4.3).
+   */
+  private async withCertificatePassword<T>(certificateId: string, password: string | undefined, use: () => Promise<T>): Promise<T> {
+    const store = this.options.certificates;
+    const now = Date.now();
+    const lockedUntil = store?.get(certificateId)?.lockedUntil;
+    if (lockedUntil && Date.parse(lockedUntil) > now) {
+      throw new CertificateError(
+        'E_LOCKED',
+        `Too many wrong passwords. Try again in ${waitWords(lockedUntil, now)}.`,
+        lockedUntil,
+      );
+    }
+    if (!password) throw new CertificateError('E_BAD_PASSWORD', 'Enter your certificate password.');
+    try {
+      const result = await use();
+      await store?.recordPassword(certificateId, true);
+      return result;
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== 'E_BAD_PASSWORD') throw err;
+      const after = await store?.recordPassword(certificateId, false);
+      const retryAt = after?.lockedUntil;
+      throw new CertificateError(
+        'E_BAD_PASSWORD',
+        retryAt ? `Wrong certificate password. Try again in ${waitWords(retryAt, Date.now())}.` : 'Wrong certificate password.',
+        retryAt,
+      );
+    }
+  }
+
+  // ── One key storage at a time (certificate-password-pairing-plan.md §5) ──
+
+  /** Apps paired with a storage other than `storage`: what switching to it unpairs. */
+  pairingsOutside(storage: KeySource): ServerSummary[] {
+    return this.servers().filter((s) => s.keySource !== storage);
+  }
+
+  /**
+   * Unpairs every app paired with a storage other than `next`, on the server
+   * and here, so only one storage's pairings remain. Never waits on a server:
+   * one that can't be reached is removed here and its revoke queued. With
+   * `removeCertificate`, switching to the security chip also deletes the
+   * imported certificates. The caller saves the setting afterwards.
+   */
+  async switchKeyStorage(next: KeySource, opts: { removeCertificate?: boolean } = {}): Promise<SwitchResult> {
+    const result: SwitchResult = { unpaired: [], queued: [], failed: [] };
+    for (const server of this.options.store.list()) {
+      if (keySourceOf(server) === next) continue;
+      try {
+        const outcome = await this.unpair(server.id, { offline: 'remove' });
+        (outcome.status === 'removed_locally' ? result.queued : result.unpaired).push(server.name);
+      } catch {
+        result.failed.push(server.name);
+      }
+    }
+    if (next === 'platform' && opts.removeCertificate) {
+      for (const certificate of this.options.certificates?.list() ?? []) {
+        await this.removeCertificate(certificate.id).catch(() => result.failed.push(certificate.commonName));
+      }
+    }
     this.options.onServersChanged?.();
-    return paired;
+    return result;
   }
 
   /** The certificate new pairings use, or null for a platform key (§6.4). */

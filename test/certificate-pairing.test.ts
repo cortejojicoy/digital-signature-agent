@@ -1,6 +1,8 @@
-// Software certificates end to end (pkcs12-key-storage-plan.md §6, §8, §11.2):
-// the real Agent against the mock server, with the memory key store standing
-// in for the native PKCS#12 import.
+// Software certificates end to end (pkcs12-key-storage-plan.md §6, §8, §11.2;
+// certificate-password-pairing-plan.md §3–§5, §11): the real Agent against the
+// mock server, with the memory key store standing in for the native import.
+// Certificate keys are unlocked by the certificate password ("test" for the
+// fixtures), never by an OS prompt.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -11,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { Agent } from '../src/main/agent';
 import { CertificateError, CertificateStore } from '../src/main/certificates';
-import type { ConfirmRequest } from '../src/main/jobs';
+import type { Approval, ConfirmRequest, RetryReason } from '../src/main/jobs';
 import type { KeySource } from '../src/main/keystore';
 import { PairingError, type PairingProgress } from '../src/main/pairing';
 import { Store } from '../src/main/store';
@@ -32,8 +34,12 @@ interface Harness {
   agent: Agent;
   keyStorage: KeySource | null;
   confirms: ConfirmRequest[];
+  /** What the confirm window answers, in order; then the right password. */
+  answers: Approval[];
+  /** Why the confirm window was asked again. */
+  retries: RetryReason[];
   progress: PairingProgress[];
-  pair(server?: MockSigningServer, userId?: string): Promise<void>;
+  pair(server?: MockSigningServer, userId?: string, password?: string): Promise<void>;
 }
 
 let dir: string;
@@ -71,11 +77,14 @@ async function agentFor(
     certificates,
     keyStorage: opts.keyStorage === undefined ? 'pkcs12' : opts.keyStorage,
     confirms: [],
+    answers: [],
+    retries: [],
     progress: [],
     agent: null as unknown as Agent,
-    async pair(target = server, userId) {
+    async pair(target = server, userId, password = 'test') {
       const { uuid, userCode } = target.startPairing(userId);
       await h.agent.pair(target.origin, userCode, {
+        password,
         onProgress: (p) => {
           h.progress.push(p);
           if (p.stage === 'awaiting_confirmation') target.confirmPairing(uuid);
@@ -91,9 +100,10 @@ async function agentFor(
     agentVersion: '1.0.0',
     allowInsecureLocalNetwork: true,
     pollIntervalMs: 5,
-    confirm: async (request) => {
+    confirm: async (request, retry) => {
       h.confirms.push(request);
-      return true;
+      if (retry) h.retries.push(retry);
+      return h.answers.shift() ?? { approved: true, password: 'test' };
     },
   });
   return h;
@@ -171,10 +181,18 @@ describe('pairing with a certificate', () => {
     expect(paired).toMatchObject({ keySource: 'pkcs12', certificateId: cert.id, identityKeyId: cert.keyId, algorithm: 'RS256' });
     // Only a session key is new.
     expect([...h.keystore.keys.keys()].sort()).toEqual([cert.keyId, paired.sessionKeyId].sort());
-    expect(h.keystore.prompts).toEqual(['pair this computer with Test Signing App']);
+    // The certificate password signed the registration proof: no OS prompt.
+    expect(h.keystore.prompts).toEqual([]);
+    expect(h.keystore.passwords).toEqual(['test']);
 
     const device = [...h.server.devices.values()][0];
-    expect(device).toMatchObject({ keySource: 'pkcs12', certificateFingerprint: cert.fingerprint256, protection: 'software' });
+    expect(device).toMatchObject({
+      keySource: 'pkcs12',
+      certificateFingerprint: cert.fingerprint256,
+      protection: 'software',
+      userPresence: true,
+      presenceMethod: 'certificate_password',
+    });
     expect(device.certificateSubject).toContain('CN=Test Signer rsa');
 
     expect(h.agent.servers()[0]).toMatchObject({ keySource: 'pkcs12', certificateName: 'Test Signer rsa' });
@@ -189,7 +207,8 @@ describe('pairing with a certificate', () => {
 
     expect(await h.agent.handleLink(job.link)).toEqual({ result: 'completed', jobId: job.uuid });
     expect(h.server.jobs.get(job.uuid)!.status).toBe('completed');
-    expect(h.keystore.prompts.at(-1)).toBe('sign "Leave form" with your certificate (Test Signer rsa)');
+    expect(h.keystore.prompts).toEqual([]);
+    expect(h.keystore.passwords.at(-1)).toBe('test');
   });
 
   it('one certificate key serves several apps', async () => {
@@ -302,26 +321,6 @@ describe("a certificate's key is deleted only with the certificate (§6.5)", () 
 });
 
 describe('switching storage and replacing a certificate', () => {
-  it('re-pairs an app from the security chip to the certificate, asking first', async () => {
-    const h = await setup({ keyStorage: 'platform' });
-    await h.pair();
-    const before = h.store.list()[0];
-    expect(before.keySource).toBe('platform');
-
-    h.keyStorage = 'pkcs12';
-    const cert = await h.agent.importCertificate(first.data, 'test');
-    await h.pair();
-    expect(h.progress).toContainEqual(
-      expect.objectContaining({ stage: 'already_paired_locally', from: 'platform', to: 'pkcs12' }),
-    );
-    const after = h.store.list()[0];
-    expect(after).toMatchObject({ keySource: 'pkcs12', identityKeyId: cert.keyId });
-    // The old platform identity key is gone with the old pairing.
-    expect(h.keystore.keys.has(before.identityKeyId)).toBe(false);
-    // The server rebound the same device instead of adding one.
-    expect([...h.server.devices.values()].filter((d) => !d.revoked)).toHaveLength(1);
-  });
-
   it('keeps the old certificate while an app still uses it, and drops it after re-pairing', async () => {
     const h = await setup();
     const old = await h.agent.importCertificate(first.data, 'test');
@@ -348,3 +347,150 @@ describe('switching storage and replacing a certificate', () => {
     expect(h.keystore.keys.has(old.keyId)).toBe(false);
   });
 });
+
+describe('pairing from the link (certificate-password-pairing-plan.md §3)', () => {
+  it('previews the app, account and certificate without changing anything', async () => {
+    const h = await setup();
+    await h.agent.importCertificate(first.data, 'test');
+    const { uuid, userCode } = h.server.startPairing();
+
+    const preview = await h.agent.previewPairing(h.server.origin, userCode);
+    expect(preview).toEqual({
+      serverName: 'Test Signing App',
+      origin: h.server.origin,
+      userName: 'Juan dela Cruz',
+      repair: false,
+      certificateName: 'Test Signer rsa',
+    });
+    expect(h.server.pairings.get(uuid)!.status).toBe('pending');
+    expect(h.keystore.keys.size).toBe(1); // only the certificate key
+
+    // The same code still pairs afterwards.
+    await h.pair();
+    expect(h.store.list()).toHaveLength(1);
+    expect((await h.agent.previewPairing(h.server.origin, h.server.startPairing().userCode)).repair).toBe(true);
+  });
+
+  it('refuses in the preview what pairing would refuse, before any password', async () => {
+    const h = await setup({ server: { acceptsCertificates: false } });
+    await h.agent.importCertificate(first.data, 'test');
+    expect(await errorOf(h.agent.previewPairing(h.server.origin, h.server.startPairing().userCode))).toMatchObject({
+      code: 'certificates_disabled',
+    });
+    const none = await setup({ name: 'none' });
+    expect(await errorOf(none.agent.previewPairing(none.server.origin, none.server.startPairing().userCode))).toMatchObject({
+      code: 'certificate_missing',
+    });
+  });
+
+  it('a wrong password stops before the claim, and sends nothing', async () => {
+    const h = await setup();
+    const cert = await h.agent.importCertificate(first.data, 'test');
+    const err = await errorOf(h.pair(h.server, undefined, 'wrong'));
+    expect(err).toBeInstanceOf(PairingError);
+    expect(err).toMatchObject({ code: 'bad_password', message: 'Wrong certificate password.' });
+    // Not claimed: the server never saw the keys.
+    expect([...h.server.pairings.values()].map((p) => p.status)).toEqual(['pending']);
+    // The session key made for it is gone; the certificate key stays.
+    expect([...h.keystore.keys.keys()]).toEqual([cert.keyId]);
+  });
+});
+
+describe('the certificate password (certificate-password-pairing-plan.md §4)', () => {
+  it('asks again after a wrong password, leaving the job open, then signs', async () => {
+    const h = await setup();
+    await h.agent.importCertificate(first.data, 'test');
+    await h.pair();
+    const job = h.server.createJob('Leave form', DOC_HASH);
+    h.answers.push({ approved: true, password: 'nope' }, { approved: true }, { approved: true, password: 'test' });
+
+    expect(await h.agent.handleLink(job.link)).toEqual({ result: 'completed', jobId: job.uuid });
+    expect(h.retries).toEqual([
+      { code: 'E_BAD_PASSWORD', error: 'Wrong certificate password.', retryAt: undefined },
+      { code: 'E_BAD_PASSWORD', error: 'Enter your certificate password.', retryAt: undefined },
+    ]);
+    expect(h.confirms).toHaveLength(3);
+    expect(h.server.jobs.get(job.uuid)!.status).toBe('completed');
+  });
+
+  it('declining with the password window open rejects the job', async () => {
+    const h = await setup();
+    await h.agent.importCertificate(first.data, 'test');
+    await h.pair();
+    const job = h.server.createJob('Leave form', DOC_HASH);
+    h.answers.push({ approved: true, password: 'nope' }, { approved: false });
+    expect(await h.agent.handleLink(job.link)).toEqual({ result: 'rejected', jobId: job.uuid, reason: 'declined' });
+    expect(h.server.jobs.get(job.uuid)!.status).toBe('rejected');
+  });
+
+  it('waits 30 s after 5 wrong passwords, doubling, and resets on the right one', async () => {
+    const h = await setup();
+    const cert = await h.agent.importCertificate(first.data, 'test');
+    await h.pair();
+    const server = h.store.list()[0];
+    const sign = (password: string) => h.agent.signIdentity(server, Buffer.from('m'), 'test', undefined, password);
+
+    for (let i = 0; i < 4; i++) expect(await errorOf(sign('nope'))).toMatchObject({ code: 'E_BAD_PASSWORD', retryAt: undefined });
+    const fifth = (await errorOf(sign('nope'))) as { retryAt: string; message: string };
+    expect(fifth.message).toMatch(/Try again in 30 seconds/);
+    const wait = Date.parse(fifth.retryAt) - Date.now();
+    expect(wait).toBeGreaterThan(25_000);
+    expect(wait).toBeLessThanOrEqual(30_000);
+
+    // Locked: even the right password waits, and the key isn't tried.
+    const tries = h.keystore.passwords.length;
+    expect(await errorOf(sign('test'))).toMatchObject({ code: 'E_LOCKED' });
+    expect(h.keystore.passwords).toHaveLength(tries);
+
+    // After the wait the right password works and clears the count.
+    await h.certificates.recordPassword(cert.id, false); // a sixth miss doubles the wait…
+    expect(Date.parse(h.certificates.get(cert.id)!.lockedUntil!) - Date.now()).toBeGreaterThan(55_000);
+    await h.certificates.recordPassword(cert.id, true); // …and a right one (after the wait) clears it
+    await expect(sign('test')).resolves.toBeInstanceOf(Buffer);
+    expect(h.certificates.get(cert.id)).not.toHaveProperty('failedAttempts');
+  });
+});
+
+describe('one key storage at a time (certificate-password-pairing-plan.md §5)', () => {
+  it('switching to the certificate unpairs the security-chip apps on the server and deletes their keys', async () => {
+    const h = await setup({ keyStorage: 'platform' });
+    const other = await startServer({ serverId: 'other-app', serverName: 'Other App' });
+    await h.pair();
+    await h.pair(other);
+    const before = h.store.list();
+    expect(h.agent.pairingsOutside('pkcs12').map((s) => s.name)).toEqual(['Test Signing App', 'Other App']);
+
+    other.failNextUnpair = true; // one of them can't be reached
+    const result = await h.agent.switchKeyStorage('pkcs12');
+    expect(result).toEqual({ unpaired: ['Test Signing App'], queued: ['Other App'], failed: [] });
+    expect(h.store.list()).toEqual([]);
+    for (const s of before) expect(h.keystore.keys.has(s.identityKeyId)).toBe(false);
+    expect([...h.server.devices.values()][0].revoked).toBe(true);
+    // The unreachable one waits as a queued revoke, holding only its session key.
+    expect(h.store.pendingRevokes().map((r) => r.serverName)).toEqual(['Other App']);
+  });
+
+  it('switching to the security chip keeps the certificate unless asked to remove it', async () => {
+    const h = await setup();
+    const cert = await h.agent.importCertificate(first.data, 'test');
+    await h.pair();
+
+    await h.agent.switchKeyStorage('platform');
+    expect(h.store.list()).toEqual([]);
+    expect(h.certificates.active()?.id).toBe(cert.id);
+    expect(h.keystore.keys.has(cert.keyId)).toBe(true);
+
+    await h.agent.switchKeyStorage('platform', { removeCertificate: true });
+    expect(h.certificates.list()).toEqual([]);
+    expect(h.keystore.keys.size).toBe(0);
+  });
+
+  it('with nothing paired in the other storage, switching changes no pairing', async () => {
+    const h = await setup();
+    await h.agent.importCertificate(first.data, 'test');
+    await h.pair();
+    expect(await h.agent.switchKeyStorage('pkcs12')).toEqual({ unpaired: [], queued: [], failed: [] });
+    expect(h.store.list()).toHaveLength(1);
+  });
+});
+

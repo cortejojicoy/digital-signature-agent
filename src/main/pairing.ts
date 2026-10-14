@@ -21,7 +21,7 @@ import { randomBytes } from 'node:crypto';
 
 import { ApiError, type AgentApi, type PairingLookup } from './api';
 import { canonicalMessage, registrationPayloadHash, sha256Hex } from './canonical';
-import type { StoredCertificate } from './certificates';
+import { CertificateError, type StoredCertificate } from './certificates';
 import { detectDeviceType, isDeviceType, type DeviceType } from './device-type';
 import type { KeyInfo, KeySource, KeyStore } from './keystore';
 import { keySourceOf, ownedKeyIds, type PairedServer, type Store } from './store';
@@ -57,6 +57,9 @@ export type PairingErrorCode =
   | 'device_type_not_allowed'
   // Software certificates (pkcs12-key-storage-plan.md §8)
   | 'no_key_storage'
+  // The certificate password (certificate-password-pairing-plan.md §4.3)
+  | 'bad_password'
+  | 'certificate_locked'
   | 'certificates_disabled'
   | 'certificate_missing'
   | 'certificate_untrusted'
@@ -87,6 +90,11 @@ export interface PairingDeps {
   biometryOnly?: boolean;
   /** Pair with this imported certificate's key instead of a new platform key (§6.4). */
   certificate?: StoredCertificate | null;
+  /**
+   * Signs with the identity key. With a certificate it unlocks the key with
+   * the certificate password (and counts wrong ones); defaults to keystore.sign.
+   */
+  signIdentity?(keyId: string, message: Buffer, reason: string): Promise<Buffer>;
   pollIntervalMs?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
@@ -104,14 +112,34 @@ export interface PairOptions {
 
 const SERVER_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-export async function pair(deps: PairingDeps, code: string, opts: PairOptions = {}): Promise<PairedServer> {
-  const { keystore, store, api } = deps;
-  const progress = opts.onProgress ?? (() => {});
-  const sleep = deps.sleep ?? abortableSleep;
-  const certificate = deps.certificate ?? null;
-  const keySource: KeySource = certificate ? 'pkcs12' : 'platform';
+/** What the pairing screen shows before any key or prompt (certificate-password-pairing-plan.md §3.2). */
+export interface PairingPreview {
+  serverName: string;
+  origin: string;
+  userName: string;
+  /** This account's signature for the app is already here: pairing again replaces it. */
+  repair: boolean;
+}
 
-  progress({ stage: 'looking_up' });
+/**
+ * Looks the code up and runs every check that can stop a pairing before a
+ * key exists. Changes nothing: the lookup only reads the pending pairing.
+ */
+export async function previewPairing(deps: PairingDeps, code: string): Promise<PairingPreview> {
+  const checked = await preflight(deps, code);
+  return {
+    serverName: checked.lookup.server.name,
+    origin: deps.api.origin,
+    userName: checked.lookup.user_name ?? '',
+    repair: checked.existing !== null,
+  };
+}
+
+/** Lookup and the early refusals that pair() and previewPairing() share. */
+async function preflight(deps: PairingDeps, code: string) {
+  const { keystore, store, api } = deps;
+  const certificate = deps.certificate ?? null;
+
   const lookup = await api.lookupPairing(code);
   validateLookup(lookup, api.origin);
   const server = lookup.server;
@@ -143,6 +171,19 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
   if (computer && !ownDevice && !sameComputer(computer.hardware_id_hash, device.hardwareIdHash)) {
     throw accountPairedError(server.name, lookup.user_name, computer.label, manageUrl);
   }
+  return { lookup, server, userId, device, deviceType, existing, manageUrl };
+}
+
+export async function pair(deps: PairingDeps, code: string, opts: PairOptions = {}): Promise<PairedServer> {
+  const { keystore, store, api } = deps;
+  const progress = opts.onProgress ?? (() => {});
+  const sleep = deps.sleep ?? abortableSleep;
+  const certificate = deps.certificate ?? null;
+  const keySource: KeySource = certificate ? 'pkcs12' : 'platform';
+  const signIdentity = deps.signIdentity ?? ((keyId, message, reason) => keystore.sign(keyId, message, reason));
+
+  progress({ stage: 'looking_up' });
+  const { lookup, server, userId, device, deviceType, existing, manageUrl } = await preflight(deps, code);
 
   if (existing) {
     progress({
@@ -202,7 +243,15 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
       registrationPayloadHash(identity.spki, session.spki),
     );
     opts.signal?.throwIfAborted();
-    const proof = await keystore.sign(identityKeyId, Buffer.from(message, 'utf8'), `pair this computer with ${server.name}`);
+    const proof = await signIdentity(identityKeyId, Buffer.from(message, 'utf8'), `pair this computer with ${server.name}`).catch(
+      (err: unknown) => {
+        // Before the claim: a wrong certificate password sends nothing to the server.
+        if (err instanceof CertificateError && (err.code === 'E_BAD_PASSWORD' || err.code === 'E_LOCKED')) {
+          throw new PairingError(err.code === 'E_LOCKED' ? 'certificate_locked' : 'bad_password', err.message);
+        }
+        throw err;
+      },
+    );
     const rebind = existing ? await rebindProof(keystore, existing, lookup, identity.spki, session.spki) : null;
 
     const claim = await api.claimPairing(lookup.pairing, {
@@ -214,6 +263,8 @@ export async function pair(deps: PairingDeps, code: string, opts: PairOptions = 
       user_presence: identity.userPresence,
       key_source: keySource,
       certificate_chain: certificate ? certificate.chain : undefined,
+      // The certificate password approves each use, not the OS (certificate-password-pairing-plan.md §4.4).
+      presence_method: certificate ? 'certificate_password' : 'os',
       attestation: attestation
         ? {
             format: attestation.format,

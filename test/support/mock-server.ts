@@ -82,6 +82,8 @@ export interface Device {
   revoked: boolean;
   rebound: boolean;
   keySource: 'platform' | 'pkcs12';
+  /** What approves each use: the OS prompt, or the certificate password (certificate-password-pairing-plan.md §4.4). */
+  presenceMethod: 'os' | 'certificate_password';
   /** keySource 'pkcs12': the leaf's SHA-256 fingerprint and subject. */
   certificateFingerprint: string | null;
   certificateSubject: string | null;
@@ -290,6 +292,7 @@ export class MockSigningServer {
       virtual: !!c.device?.virtual,
       agentVersion: c.agent_version,
       keySource: c.key_source === 'pkcs12' ? ('pkcs12' as const) : ('platform' as const),
+      presenceMethod: c.presence_method === 'certificate_password' ? ('certificate_password' as const) : ('os' as const),
       certificateFingerprint: c.key_source === 'pkcs12' ? (p.certificate?.fingerprint ?? null) : null,
       certificateSubject: c.key_source === 'pkcs12' ? (p.certificate?.subject ?? null) : null,
     };
@@ -579,6 +582,13 @@ export class MockSigningServer {
     const message = canonical('register_agent', p.nonce, p.userId, bound);
     if (!verifyProof(c.algorithm, c.identity_public_key, message, c.proof)) {
       throw new HttpError(422, 'invalid_proof', 'The registration proof did not verify.');
+    }
+    const presenceMethod = c.presence_method ?? 'os';
+    if (presenceMethod !== 'os' && presenceMethod !== 'certificate_password') {
+      throw new HttpError(422, 'invalid_presence_method', 'Unsupported presence method.');
+    }
+    if (presenceMethod === 'certificate_password' && c.key_source !== 'pkcs12') {
+      throw new HttpError(422, 'invalid_presence_method', 'Only a certificate key can be approved with a certificate password.');
     }
     if (this.requirePresence && !c.user_presence) {
       throw new HttpError(422, 'presence_required', 'This server requires Touch ID or Windows Hello.');
