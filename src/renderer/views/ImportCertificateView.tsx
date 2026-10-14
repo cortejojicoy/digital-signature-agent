@@ -88,8 +88,8 @@ export function ImportCertificateView({ onDone, onBack }: Props) {
           <div className="big-check" aria-hidden="true">✓</div>
           <h1>Imported {imported.commonName}</h1>
           <p className="muted">
-            Its key is now locked to this computer and can't be exported. Keep your .p12 file somewhere safe and offline;
-            this computer no longer needs it.
+            Its key is now locked to this computer and can't be exported. You'll use this certificate's password to pair
+            and sign. Keep your .p12 file somewhere safe and offline; this computer no longer needs it.
           </p>
           <IconButton icon="check" label="Done" variant="primary" tip="above" onClick={onDone} autoFocus />
         </section>
