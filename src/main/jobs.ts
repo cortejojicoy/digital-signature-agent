@@ -9,6 +9,7 @@
 import type { AgentApi, AgentJob, Credentials } from './api';
 import { ApiError } from './api';
 import { canonicalMessage } from './canonical';
+import { CertificateError } from './certificates';
 import { isKeyStoreError, type KeyStore } from './keystore';
 import { isUuid, type JobLink, type LoginLink } from './protocol';
 import type { PairedServer, Store } from './store';
@@ -24,13 +25,34 @@ export interface ConfirmRequest {
   server: PairedServer;
 }
 
+/**
+ * The user's answer. A certificate pairing approves with the certificate's
+ * password (certificate-password-pairing-plan.md §4); `true` alone is an
+ * approval without one.
+ */
+export type Approval = boolean | { approved: boolean; password?: string };
+
+/** Why the confirm window asks again: a wrong or missing certificate password. */
+export interface RetryReason {
+  error: string;
+  code: 'E_BAD_PASSWORD' | 'E_LOCKED';
+  /** Not before this ISO time (back-off, §4.3). */
+  retryAt?: string;
+}
+
 export interface JobDeps {
   keystore: KeyStore;
   store: Store;
   apiFor(server: PairedServer): AgentApi;
   credentialsFor(server: PairedServer): Credentials;
-  /** Shows the confirm window; resolves true on Approve. UX only: the OS prompt is the security boundary. */
-  confirm(request: ConfirmRequest): Promise<boolean>;
+  /**
+   * Shows the confirm window; resolves on Approve or Decline. UX only for
+   * platform keys (the OS prompt is the security boundary). Called again with
+   * `retry` while the same window asks for the certificate password again.
+   */
+  confirm(request: ConfirmRequest, retry?: RetryReason): Promise<Approval>;
+  /** Signs with the pairing's identity key; the certificate password for certificate pairings. Defaults to keystore.sign. */
+  signIdentity?(server: PairedServer, message: Buffer, reason: string, parentWindow?: Buffer, password?: string): Promise<Buffer>;
   /** Native handle of the window the OS prompt should be parented to. */
   parentWindow?(): Buffer | undefined;
   /** A certificate pairing's certificate name, for the OS prompt (pkcs12-key-storage-plan.md §6.7). */
@@ -117,27 +139,40 @@ export class JobRunner {
   }
 
   private async confirmAndSign(api: AgentApi, creds: Credentials, job: AgentJob, server: PairedServer): Promise<JobOutcome> {
-    const approved = await this.deps.confirm({ job, server });
-    if (!approved) {
-      await api.rejectJob(creds, job.uuid, 'declined').catch(() => {});
-      return { result: 'rejected', jobId: job.uuid, reason: 'declined' };
-    }
-
     const message = canonicalMessage(job.purpose, job.nonce, job.user_id, job.payload_hash);
+    const sign =
+      this.deps.signIdentity ??
+      ((s: PairedServer, m: Buffer, r: string, w?: Buffer) => this.deps.keystore.sign(s.identityKeyId, m, r, w));
     let signature: Buffer;
-    try {
-      signature = await this.deps.keystore.sign(
-        server.identityKeyId,
-        Buffer.from(message, 'utf8'),
-        promptReason(job, server, this.deps.certificateName?.(server)),
-        this.deps.parentWindow?.(),
-      );
-    } catch (err) {
-      if (isKeyStoreError(err, 'E_CANCELLED')) {
-        await api.rejectJob(creds, job.uuid, 'os_prompt_cancelled').catch(() => {});
-        return { result: 'rejected', jobId: job.uuid, reason: 'os_prompt_cancelled' };
+    let retry: RetryReason | undefined;
+    for (;;) {
+      const answer = await this.deps.confirm({ job, server }, retry);
+      const approval = typeof answer === 'boolean' ? { approved: answer } : answer;
+      if (!approval.approved) {
+        await api.rejectJob(creds, job.uuid, 'declined').catch(() => {});
+        return { result: 'rejected', jobId: job.uuid, reason: 'declined' };
       }
-      return failure(job.uuid, err);
+      try {
+        signature = await sign(
+          server,
+          Buffer.from(message, 'utf8'),
+          promptReason(job, server, this.deps.certificateName?.(server)),
+          this.deps.parentWindow?.(),
+          approval.password,
+        );
+        break;
+      } catch (err) {
+        // A wrong certificate password asks again; the job stays open on the server (§4.3).
+        if (err instanceof CertificateError && (err.code === 'E_BAD_PASSWORD' || err.code === 'E_LOCKED')) {
+          retry = { error: err.message, code: err.code, retryAt: err.retryAt };
+          continue;
+        }
+        if (isKeyStoreError(err, 'E_CANCELLED')) {
+          await api.rejectJob(creds, job.uuid, 'os_prompt_cancelled').catch(() => {});
+          return { result: 'rejected', jobId: job.uuid, reason: 'os_prompt_cancelled' };
+        }
+        return failure(job.uuid, err);
+      }
     }
 
     try {
