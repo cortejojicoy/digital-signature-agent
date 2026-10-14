@@ -9,6 +9,8 @@ interface Props {
   initialOrigin?: string;
   initialCode?: string;
   onDone: () => void;
+  /** Certificate mode: continue on the password screen (certificate-password-pairing-plan.md §3.4). */
+  onCertificate: (origin: string, code: string) => void;
 }
 
 // A pasted kukuxsign://pair?o=…&c=… link fills both fields. The main process
@@ -31,7 +33,7 @@ function sameOrigin(a: string, b: string): boolean {
 
 type Failure = Extract<PairingResult, { ok: false }>;
 
-export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props) {
+export function PairView({ initialOrigin = '', initialCode = '', onDone, onCertificate }: Props) {
   const [origin, setOrigin] = useState(initialOrigin);
   const [code, setCode] = useState(initialCode);
   const [progress, setProgress] = useState<PairingProgressView | null>(null);
@@ -39,11 +41,16 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
   const [running, setRunning] = useState(false);
   const [paired, setPaired] = useState<{ serverName: string; rebound: boolean } | null>(null);
   const [servers, setServers] = useState<ServerView[]>([]);
+  const [certificateMode, setCertificateMode] = useState(false);
   const unpairing = useUnpair();
 
   useEffect(() => window.agent.onPairingProgress(setProgress), []);
   useEffect(() => {
-    const load = () => void window.agent.getStatus().then((s) => setServers(s.servers));
+    const load = () =>
+      void window.agent.getStatus().then((s) => {
+        setServers(s.servers);
+        setCertificateMode(s.keyStorage.selected === 'pkcs12');
+      });
     load();
     return window.agent.onStatusChanged(load);
   }, []);
@@ -70,6 +77,10 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone }: Props
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (certificateMode) {
+      onCertificate(origin, code);
+      return;
+    }
     setFailure(null);
     setProgress(null);
     setRunning(true);
