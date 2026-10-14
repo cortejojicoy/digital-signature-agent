@@ -17,9 +17,9 @@ std::string narrow(const std::wstring& s);
 // A parsed .p12 (Pkcs12Import.cpp, pkcs12-key-storage-plan.md §5.3).
 struct ParsedPkcs12 {
     Pkcs12Contents contents;
-    Bytes spki;              // the first certificate's SubjectPublicKeyInfo
+    Bytes spki;                  // the first certificate's SubjectPublicKeyInfo
     LPCWSTR blobType = nullptr;  // BCRYPT_RSAPRIVATE_BLOB or BCRYPT_ECCPRIVATE_BLOB
-    Bytes privateBlob;       // plaintext CNG blob; wiped by the destructor
+    Bytes privateBlob;           // plaintext CNG blob; wiped by the destructor
 
     ParsedPkcs12() = default;
     ParsedPkcs12(const ParsedPkcs12&) = delete;
@@ -30,13 +30,16 @@ struct ParsedPkcs12 {
 };
 
 // Parses a .p12 in memory; nothing reaches a certificate store. Throws
-// E_BAD_PASSWORD, E_BAD_FILE or E_UNSUPPORTED. `withKey` false skips the key.
+// E_BAD_PASSWORD, E_BAD_FILE, E_KEY_MISMATCH or E_UNSUPPORTED. `withKey`
+// false skips the private key.
 ParsedPkcs12 parsePkcs12(const Bytes& data, const std::string& password, bool withKey);
 
-// Windows Hello consent (UserConsentVerifier) for imported TPM keys, which
-// Hello itself can't protect. Enforced by the agent, not by the key (§5.3).
-bool consentAvailable();
-void requireConsent(HWND parent, const std::string& reason);  // throws E_CANCELLED
+// DPAPI (current user): the outer layer of a certificate key file on Windows
+// (certificate-password-pairing-plan.md §6.2). CertCrypto.cpp.
+Bytes dpapiProtect(const Bytes& plain);
+Bytes dpapiUnprotect(const Bytes& sealed);
+// Signs SHA-256(message) with a plaintext CNG private blob, in memory.
+Bytes signWithBlob(LPCWSTR blobType, const Bytes& blob, Algorithm algorithm, const Bytes& message);
 
 // Windows Hello via KeyCredentialManager (C++/WinRT). RSA-2048, TPM-backed
 // when a TPM exists, OS-enforced face / fingerprint / PIN on every use.
@@ -54,10 +57,8 @@ private:
 };
 
 // CNG persisted key. MS_PLATFORM_CRYPTO_PROVIDER puts it in the TPM;
-// MS_KEY_STORAGE_PROVIDER is the software fallback. Never exportable.
-// Created keys are ECDSA P-256 with no user presence; imported ones (from a
-// .p12) may be RSA, and a KSP import can ask Windows for a password on every
-// use (NCRYPT_UI_FORCE_HIGH_PROTECTION_FLAG).
+// MS_KEY_STORAGE_PROVIDER is the software fallback. ECDSA P-256, never
+// exportable, no user presence.
 class CngKeyStore {
 public:
     CngKeyStore(LPCWSTR provider, Protection protection);
@@ -67,10 +68,8 @@ public:
 
     bool available();
     KeyInfo create(const std::string& keyId);
-    // Persists a plaintext CNG private blob under keyId (§5.3).
-    KeyInfo importKey(const std::string& keyId, LPCWSTR blobType, const Bytes& blob, bool strongProtection);
     std::optional<KeyInfo> find(const std::string& keyId);
-    Bytes sign(const std::string& keyId, const Bytes& message, HWND parent = nullptr, const std::string& reason = "");
+    Bytes sign(const std::string& keyId, const Bytes& message);
     void remove(const std::string& keyId);
     bool exportable(const std::string& keyId);
 
