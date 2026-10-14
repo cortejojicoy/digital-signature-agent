@@ -18,6 +18,8 @@ export function StatusView({ onPair, onChangeStorage, onImport }: Props) {
   const [status, setStatus] = useState<Status | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
   const [certificateNote, setCertificateNote] = useState<string | null>(null);
+  // "Keep for now" on the banner about the other storage's pairings (certificate-password-pairing-plan.md §5.3).
+  const [keepMixed, setKeepMixed] = useState(false);
 
   const refresh = useCallback(() => {
     void window.agent.getStatus().then(setStatus);
@@ -51,11 +53,14 @@ export function StatusView({ onPair, onChangeStorage, onImport }: Props) {
   const selected: KeySourceView = storage.selected ?? 'platform';
   const other: KeySourceView = selected === 'platform' ? 'pkcs12' : 'platform';
   const certificate = storage.certificate;
-  const shown = status.servers.filter((s) => s.keySource === selected);
-  const elsewhere = status.servers.length - shown.length;
+  // One key storage at a time (certificate-password-pairing-plan.md §5): every
+  // pairing is listed. Pairings of the other storage only survive from an
+  // older version (§5.3), and the banner below offers to unpair them.
+  const shown = status.servers;
+  const mixed = status.servers.filter((s) => s.keySource !== selected);
   const canPair = selected === 'platform' || certificate !== null;
 
-  const switchStorage = () => void window.agent.setKeyStorage(other).then(refresh);
+  const unpairMixed = () => void window.agent.switchKeyStorage(selected).then(refresh);
   const removeCertificate = async (c: CertificateView) => {
     setCertificateNote(null);
     const result = await window.agent.removeCertificate(c.id);
@@ -234,14 +239,19 @@ export function StatusView({ onPair, onChangeStorage, onImport }: Props) {
             ))}
           </ul>
         )}
-        {elsewhere > 0 && (
-          <p className="muted small">
-            {elsewhere} {elsewhere === 1 ? 'app uses' : 'apps use'}{' '}
-            {other === 'pkcs12' ? 'your certificate' : `the ${keyStorageLabel(status.platform, 'platform')}`}.{' '}
-            <button type="button" className="link-button" onClick={switchStorage}>
-              Switch to see {elsewhere === 1 ? 'it' : 'them'}
-            </button>
-          </p>
+        {mixed.length > 0 && !keepMixed && (
+          <div className="warning small" role="alert">
+            <p>
+              {mixed.map((s) => s.name).join(', ')} {mixed.length === 1 ? 'is' : 'are'} paired with{' '}
+              {other === 'pkcs12' ? 'your certificate' : `the ${keyStorageLabel(status.platform, 'platform')}`}, not the key
+              storage you chose. Unpair {mixed.length === 1 ? 'it' : 'them'} so this computer holds one kind of key, then pair
+              again.
+            </p>
+            <div className="button-row">
+              <IconButton icon="unlink" label="Unpair them" variant="primary" tipAlign="start" onClick={unpairMixed} />
+              <IconButton icon="x" label="Keep for now" tipAlign="start" onClick={() => setKeepMixed(true)} />
+            </div>
+          </div>
         )}
         {selected === 'pkcs12' &&
           storage.olderCertificates
@@ -300,17 +310,15 @@ export function StatusView({ onPair, onChangeStorage, onImport }: Props) {
   );
 }
 
-function certificateApproval(platform: Status['platform'], c: CertificateView): string {
-  if (c.userPresence) return platform === 'windows' ? 'Windows password for the certificate' : presenceLabel(platform, true);
-  // Imported into the TPM: Hello can't protect it, so the agent asks (§5.3).
-  if (platform === 'windows' && c.protection === 'tpm') return 'Windows Hello, asked by the agent';
-  return 'No OS prompt';
+// The certificate's own password approves each use (certificate-password-pairing-plan.md §4).
+function certificateApproval(_platform: Status['platform'], _c: CertificateView): string {
+  return 'Certificate password';
 }
 
-function certificateHolder(platform: Status['platform'], c: CertificateView): string {
-  if (c.protection === 'tpm') return 'TPM (imported, not exportable)';
-  if (platform === 'macos') return c.userPresence ? 'Sealed by the Secure Enclave' : 'Keychain (not exportable)';
-  return 'Windows key storage (not exportable)';
+function certificateHolder(platform: Status['platform'], _c: CertificateView): string {
+  if (platform === 'macos') return 'Encrypted with its password, sealed to this Mac';
+  if (platform === 'windows') return 'Encrypted with its password, protected by Windows';
+  return 'Encrypted with its password';
 }
 
 // The version line doubles as the update control: one small icon that turns
