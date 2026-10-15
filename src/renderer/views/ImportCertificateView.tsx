@@ -7,8 +7,9 @@
 import { useState, type FormEvent } from 'react';
 
 import type { CertificatePreviewView, CertificateView } from '../../shared/ipc';
-import { Icon, IconButton } from '../icons';
+import { Icon } from '../icons';
 import { formatDate } from '../labels';
+import { Button, Notice, PageHeader, PasswordField, ResultView } from '../ui';
 
 interface Props {
   onDone: () => void;
@@ -18,7 +19,6 @@ interface Props {
 export function ImportCertificateView({ onDone, onBack }: Props) {
   const [file, setFile] = useState<{ token: string; fileName: string } | null>(null);
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [preview, setPreview] = useState<CertificatePreviewView | null>(null);
   const [imported, setImported] = useState<CertificateView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +45,10 @@ export function ImportCertificateView({ onDone, onBack }: Props) {
   const open = async (e: FormEvent) => {
     e.preventDefault();
     if (!file) return;
+    if (preview) {
+      void doImport();
+      return;
+    }
     setBusy('opening');
     setError(null);
     try {
@@ -83,133 +87,97 @@ export function ImportCertificateView({ onDone, onBack }: Props) {
 
   if (imported) {
     return (
-      <main className="page">
-        <section className="card center">
-          <div className="big-check" aria-hidden="true">✓</div>
-          <h1>Imported {imported.commonName}</h1>
-          <p className="muted">
-            Its key is now locked to this computer and can't be exported. You'll use this certificate's password to pair
-            and sign. Keep your .p12 file somewhere safe and offline; this computer no longer needs it.
-          </p>
-          <IconButton icon="check" label="Done" variant="primary" tip="above" onClick={onDone} autoFocus />
-        </section>
-      </main>
+      <ResultView
+        title={`Imported ${imported.commonName}`}
+        sub="Key locked to this computer. Keep the file offline as a backup."
+        onDone={onDone}
+      />
     );
   }
 
   return (
-    <main className="page">
-      <header className="page-header">
-        <p className="eyebrow">Software certificate</p>
-        <h1>Import your certificate</h1>
-        <p className="muted">Choose your .p12 or .pfx file, such as your PNPKI certificate, and enter its password.</p>
-      </header>
+    <form className="page" onSubmit={(e) => void open(e)}>
+      <PageHeader title="Import certificate" sub="A .p12 or .pfx file, such as PNPKI." onBack={busy === 'importing' ? undefined : onBack} />
 
-      <form className="card form" onSubmit={(e) => void open(e)}>
-        <div className="file-row">
-          <span className="choice-icon" aria-hidden="true">
-            <Icon name="file" size={20} />
+      <section className="card">
+        <div className="inset-row">
+          <span className="tile tile-xs tile-file">
+            <Icon name="file" />
           </span>
-          <span className={file ? 'mono' : 'muted'}>{file ? file.fileName : 'No file chosen'}</span>
-          <button
-            type="button"
-            className="button button-quiet"
-            disabled={busy !== null}
-            onClick={() => void choose()}
-            autoFocus={!file}
-          >
-            {file ? 'Change…' : 'Choose file…'}
-          </button>
+          <span className={`grow ${file ? 'mono' : 'sub'}`}>{file ? file.fileName : 'No file chosen'}</span>
+          <Button size="sm" disabled={busy !== null} onClick={() => void choose()} autoFocus={!file}>
+            {file ? 'Change' : 'Choose file…'}
+          </Button>
         </div>
 
         {file && (
-          <label className="field">
-            <span>Password</span>
-            <div className="password-row">
-              <input
-                type={showPassword ? 'text' : 'password'}
-                autoComplete="off"
-                spellCheck={false}
-                value={password}
-                disabled={busy !== null}
-                onChange={(e) => {
-                  setPassword(e.target.value);
-                  setPreview(null);
-                }}
-                autoFocus
-              />
-              <IconButton
-                icon={showPassword ? 'eyeOff' : 'eye'}
-                label={showPassword ? 'Hide password' : 'Show password'}
-                tip="above"
-                onClick={() => setShowPassword((v) => !v)}
-              />
-            </div>
-          </label>
+          <PasswordField
+            label="Password"
+            value={password}
+            onChange={(v) => {
+              setPassword(v);
+              setPreview(null);
+            }}
+            disabled={busy !== null}
+            autoFocus
+          />
         )}
 
         {error && (
-          <p className="error" role="alert">
+          <Notice tone="error" role="alert">
             {error}
-          </p>
+          </Notice>
         )}
 
         {preview && <Preview preview={preview} />}
+      </section>
 
-        <div className="actions">
-          <IconButton icon="back" label="Back" tip="above" disabled={busy === 'importing'} onClick={onBack} />
-          {preview ? (
-            <IconButton
-              icon="download"
-              label={busy === 'importing' ? 'Importing…' : preview.alreadyImported ? 'Use this certificate' : 'Import'}
-              variant="primary"
-              tip="above"
-              disabled={busy !== null}
-              onClick={() => void doImport()}
-            />
-          ) : (
-            <IconButton
-              type="submit"
-              icon="check"
-              label={busy === 'opening' ? 'Opening…' : 'Open'}
-              variant="primary"
-              tip="above"
-              disabled={!file || busy !== null}
-            />
-          )}
-        </div>
-      </form>
-    </main>
+      <div className="actions">
+        <Button size="lg" disabled={busy === 'importing'} onClick={onBack}>
+          Cancel
+        </Button>
+        {preview ? (
+          <Button type="submit" size="lg" variant="primary" icon="download" disabled={busy !== null}>
+            {busy === 'importing' ? 'Importing…' : preview.alreadyImported ? 'Use this certificate' : 'Import'}
+          </Button>
+        ) : (
+          <Button type="submit" size="lg" variant="primary" icon="lock" disabled={!file || busy !== null}>
+            {busy === 'opening' ? 'Opening…' : 'Open'}
+          </Button>
+        )}
+      </div>
+    </form>
   );
 }
 
 function Preview({ preview }: { preview: CertificatePreviewView }) {
   return (
-    <div className="preview" aria-live="polite">
-      <dl className="facts">
-        <dt>Name</dt>
-        <dd>
-          <strong>{preview.commonName}</strong>
-          {preview.pnpki && <span className="badge badge-strong badge-inline">PNPKI</span>}
-        </dd>
-        {preview.organization && (
-          <>
-            <dt>Organisation</dt>
-            <dd>{preview.organization}</dd>
-          </>
-        )}
+    <div className="divider-top preview" aria-live="polite">
+      <div className="row">
+        <span className="tile tile-sm">
+          <Icon name="certificate" size={20} />
+        </span>
+        <div className="grow">
+          <div className="title-row">
+            <span className="title">{preview.commonName}</span>
+            {preview.pnpki && <span className="badge">PNPKI</span>}
+          </div>
+          {preview.organization && <div className="sub">{preview.organization}</div>}
+        </div>
+      </div>
+      <dl className="facts facts-small selectable">
         <dt>Issued by</dt>
         <dd>{preview.issuerName}</dd>
         <dt>Valid until</dt>
         <dd>{formatDate(preview.notAfter)}</dd>
-        <dt>Serial</dt>
-        <dd className="mono">{preview.serialHex}</dd>
         <dt>Key</dt>
         <dd>{preview.algorithm}</dd>
+        <dt>Serial</dt>
+        <dd className="mono">{preview.serialHex}</dd>
       </dl>
       {preview.chain.length > 1 && (
-        <details className="other-devices small">
-          <summary className="muted">Issuer chain ({preview.chain.length} certificates)</summary>
+        <details>
+          <summary>Issuer chain · {preview.chain.length}</summary>
           <ol className="chain-list">
             {preview.chain.map((name, i) => (
               <li key={i}>{name}</li>
@@ -218,11 +186,11 @@ function Preview({ preview }: { preview: CertificatePreviewView }) {
         </details>
       )}
       {preview.warnings.map((warning) => (
-        <p key={warning} className="warning small">
+        <Notice key={warning} tone="warning">
           {warning}
-        </p>
+        </Notice>
       ))}
-      {preview.alreadyImported && <p className="muted small">This certificate is already on this computer.</p>}
+      {preview.alreadyImported && <Notice tone="info">Already on this computer.</Notice>}
     </div>
   );
 }

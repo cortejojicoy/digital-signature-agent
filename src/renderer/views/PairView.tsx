@@ -1,8 +1,9 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 
 import type { KeySourceView, PairingProgressView, PairingResult, ServerView } from '../../shared/ipc';
-import { IconButton } from '../icons';
+import { Icon } from '../icons';
 import { currentPlatform } from '../labels';
+import { Button, Notice, PageHeader, ResultView, Spinner } from '../ui';
 import { OfflinePrompt, useUnpair } from '../unpair';
 
 interface Props {
@@ -92,64 +93,63 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone, onCerti
 
   if (paired) {
     return (
-      <main className="page">
-        <section className="card center">
-          <div className="big-check" aria-hidden="true">✓</div>
-          <h1>
-            {paired.rebound ? 'Re-paired' : 'Paired'} with {paired.serverName}
-          </h1>
-          {paired.rebound && <p className="muted">Your existing device was updated with new keys.</p>}
-          <p className="muted">Go back to your browser to finish.</p>
-          <IconButton icon="check" label="Done" variant="primary" tip="above" onClick={onDone} autoFocus />
-        </section>
-      </main>
+      <ResultView
+        title={`${paired.rebound ? 'Re-paired' : 'Paired'} with ${paired.serverName}`}
+        sub={paired.rebound ? 'Existing device updated with new keys. Return to your browser.' : 'Return to your browser to finish.'}
+        onDone={onDone}
+      />
     );
   }
 
   return (
-    <main className="page">
-      <header className="page-header">
-        <h1>Pair with an app</h1>
-        <p className="muted">
-          Open the website (<span className="mono">signature.uplb.edu.ph</span> for UPLB) and choose{' '}
-          <strong>Pair this computer</strong>. Enter the address and code it shows, or paste the pairing link.
-        </p>
-      </header>
+    <form className="page" onSubmit={(e) => void submit(e)}>
+      <PageHeader
+        title="Pair an app"
+        sub={
+          <>
+            On the app's website, choose <strong>Pair this computer</strong>. Paste the link or enter the details.
+          </>
+        }
+        onBack={running ? undefined : onDone}
+      />
 
-      <form className="card form" onSubmit={(e) => void submit(e)}>
+      <section className="card">
         <label className="field">
-          <span>App address</span>
-          <input
-            className="mono"
-            type="text"
-            inputMode="url"
-            placeholder="https://sign.example.gov.ph"
-            value={origin}
-            disabled={running}
-            onChange={(e) => applyPaste(e.target.value, setOrigin)}
-            autoFocus={!initialOrigin}
-            required
-          />
-        </label>
-        {initialOrigin && (
-          <p className="warning small">
-            Opened from a link. Continue only if you use <span className="mono">{initialOrigin}</span>.
-          </p>
-        )}
-        {holder && !running && (
-          <div className="warning small">
-            <p>
-              This computer already holds {holder.userName ? `${holder.userName}'s` : 'a'} signature for {holder.name}. Unpair
-              it to use a different account, or continue to re-pair {holder.userName ? `${holder.userName}'s` : 'it'}.
-            </p>
-            <IconButton
-              icon="unlink"
-              label={unpairing.busy ? 'Unpairing…' : `Unpair ${holder.name}`}
-              tip="above"
-              disabled={!!unpairing.busy || !!unpairing.offline}
-              onClick={() => void unpair(holder.id)}
+          <span className="field-label">App address</span>
+          <span className="input-wrap">
+            <Icon name="globe" size={16} />
+            <input
+              className="mono"
+              type="text"
+              inputMode="url"
+              placeholder="https://sign.example.gov.ph"
+              value={origin}
+              disabled={running}
+              onChange={(e) => applyPaste(e.target.value, setOrigin)}
+              autoFocus={!initialOrigin}
+              required
             />
-          </div>
+          </span>
+        </label>
+
+        {initialOrigin && <Notice tone="warning">Opened from a link. Check that this is your app.</Notice>}
+        {holder && !running && (
+          <Notice
+            tone="warning"
+            actions={
+              <Button
+                size="sm"
+                icon="unlink"
+                disabled={!!unpairing.busy || !!unpairing.offline}
+                onClick={() => void unpair(holder.id)}
+              >
+                {unpairing.busy ? 'Unpairing…' : `Unpair ${holder.name}`}
+              </Button>
+            }
+          >
+            {holder.name} is already paired{holder.userName ? ` for ${holder.userName}` : ''}. Unpair to use another account, or
+            continue to re-pair.
+          </Notice>
         )}
         {unpairing.offline && (
           <OfflinePrompt
@@ -159,11 +159,12 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone, onCerti
             onKeep={unpairing.keep}
           />
         )}
-        {unpairing.note && <p className="muted small">{unpairing.note}</p>}
+        {unpairing.note && <Notice tone="info">{unpairing.note}</Notice>}
+
         <label className="field">
-          <span>Pairing code</span>
+          <span className="field-label">Pairing code</span>
           <input
-            className="mono code-input"
+            className="code-input"
             type="text"
             placeholder="K7QM-2XPD"
             maxLength={64}
@@ -176,68 +177,74 @@ export function PairView({ initialOrigin = '', initialCode = '', onDone, onCerti
         </label>
 
         {progress && running && progress.stage === 'already_paired_locally' ? (
-          <div className="warning small" role="alertdialog" aria-label="Already paired">
-            <p>
-              {progress.from === progress.to ? (
-                <>
-                  Your {progress.serverName} signature is already on this computer
-                  {progress.userName ? ` (${progress.userName})` : ''}. Re-pair it with new keys?
-                </>
-              ) : (
-                <>
-                  {progress.serverName} is paired with {storageWords(progress.from)}
-                  {progress.userName ? ` (${progress.userName})` : ''}. Re-pair it with {storageWords(progress.to)}?
-                </>
-              )}
-            </p>
-            <div className="actions">
-              <IconButton icon="x" label="Keep the current pairing" tip="above" onClick={() => void window.agent.confirmRepair(false)} />
-              <IconButton
-                icon="refresh"
-                label="Re-pair with new keys"
-                variant="primary"
-                tip="above"
-                onClick={() => void window.agent.confirmRepair(true)}
-              />
-            </div>
-          </div>
+          <Notice
+            tone="warning"
+            role="alertdialog"
+            actions={
+              <>
+                <Button size="sm" icon="x" onClick={() => void window.agent.confirmRepair(false)}>
+                  Keep current
+                </Button>
+                <Button size="sm" variant="primary" icon="refresh" onClick={() => void window.agent.confirmRepair(true)}>
+                  Re-pair
+                </Button>
+              </>
+            }
+          >
+            {progress.from === progress.to ? (
+              <>
+                {progress.serverName} is already paired here{progress.userName ? ` (${progress.userName})` : ''}. Re-pair with new
+                keys?
+              </>
+            ) : (
+              <>
+                {progress.serverName} uses {storageWords(progress.from)}
+                {progress.userName ? ` (${progress.userName})` : ''}. Re-pair with {storageWords(progress.to)}?
+              </>
+            )}
+          </Notice>
         ) : (
           progress && running && <ProgressLine progress={progress} />
         )}
-        {failure && (
-          <div className="error" role="alert">
-            <p>{failure.error}</p>
-            {failure.code === 'app_already_paired' && failure.serverId && (
-              <IconButton
-                icon="unlink"
-                label={unpairing.busy ? 'Unpairing…' : `Unpair ${failure.serverName ?? 'that app'}`}
-                tip="above"
-                disabled={!!unpairing.busy || !!unpairing.offline}
-                onClick={() => void unpair(failure.serverId!)}
-              />
-            )}
-            {(failure.code === 'account_already_paired' || failure.code === 'certificate_in_use') && failure.manageUrl && (
-              <IconButton
-                icon="external"
-                label="Open signing devices"
-                tip="above"
-                onClick={() => void window.agent.openDevicesPage()}
-              />
-            )}
-          </div>
-        )}
 
-        <div className="actions">
-          <IconButton
-            icon={running ? 'x' : 'back'}
-            label={running ? 'Cancel pairing' : 'Back'}
-            tip="above"
-            onClick={() => (running ? void window.agent.cancelPairing() : onDone())}
-          />
-          <IconButton type="submit" icon="check" label={running ? 'Pairing…' : 'Pair'} variant="primary" tip="above" disabled={running} />
-        </div>
-      </form>
-    </main>
+        {failure && (
+          <Notice
+            tone="error"
+            role="alert"
+            actions={
+              <>
+                {failure.code === 'app_already_paired' && failure.serverId && (
+                  <Button
+                    size="sm"
+                    icon="unlink"
+                    disabled={!!unpairing.busy || !!unpairing.offline}
+                    onClick={() => void unpair(failure.serverId!)}
+                  >
+                    {unpairing.busy ? 'Unpairing…' : `Unpair ${failure.serverName ?? 'that app'}`}
+                  </Button>
+                )}
+                {(failure.code === 'account_already_paired' || failure.code === 'certificate_in_use') && failure.manageUrl && (
+                  <Button size="sm" icon="external" onClick={() => void window.agent.openDevicesPage()}>
+                    Open signing devices
+                  </Button>
+                )}
+              </>
+            }
+          >
+            {failure.error}
+          </Notice>
+        )}
+      </section>
+
+      <div className="actions">
+        <Button size="lg" icon="x" onClick={() => (running ? void window.agent.cancelPairing() : onDone())}>
+          Cancel
+        </Button>
+        <Button type="submit" size="lg" variant="primary" icon="link" disabled={running}>
+          {running ? 'Pairing…' : 'Pair'}
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -247,26 +254,32 @@ function storageWords(source: KeySourceView): string {
 }
 
 function ProgressLine({ progress }: { progress: PairingProgressView }) {
+  let text: ReactNode = null;
   switch (progress.stage) {
     case 'looking_up':
-      return <p className="progress">Checking code…</p>;
+      text = 'Checking code…';
+      break;
     case 'creating_keys':
-      return <p className="progress">Creating keys for {progress.serverName}. Approve the prompt.</p>;
-    case 'awaiting_confirmation':
-      return (
-        <p className="progress">
-          {progress.existingDevice ? (
-            <>
-              Updating your existing device <strong>“{progress.existingDevice.label}”</strong>. Confirm in the web app.
-            </>
-          ) : (
-            <>
-              Confirm <strong>“{progress.deviceLabel}”</strong> in the web app.
-            </>
-          )}
-        </p>
+      text = (
+        <>
+          <strong>Creating keys</strong> · approve with {currentPlatform() === 'windows' ? 'Windows Hello' : 'Touch ID'}
+        </>
       );
+      break;
+    case 'awaiting_confirmation':
+      text = (
+        <>
+          Confirm <strong>“{progress.existingDevice?.label ?? progress.deviceLabel}”</strong> in the web app
+        </>
+      );
+      break;
     default:
       return null;
   }
+  return (
+    <div className="progress" role="status">
+      <Spinner small />
+      <span>{text}</span>
+    </div>
+  );
 }

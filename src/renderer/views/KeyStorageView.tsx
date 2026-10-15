@@ -1,10 +1,11 @@
-// "Where should your signing key live?" (pkcs12-key-storage-plan.md §1.1, §7.1).
-// Shown on first launch, and from Change next to Key storage.
+// "Where should your key live?" (pkcs12-key-storage-plan.md §1.1, §7.1).
+// Shown on first launch, and from Change next to the key storage.
 import { useState } from 'react';
 
 import type { KeySourceView, StatusView, SwitchResultView } from '../../shared/ipc';
-import { Icon, IconButton } from '../icons';
+import { Icon } from '../icons';
 import { formatDate, keyStorageLabel } from '../labels';
+import { Button, Hint, Notice, PageHeader, ResultView, displayOrigin, monogram } from '../ui';
 
 interface Props {
   status: StatusView;
@@ -27,6 +28,7 @@ export function KeyStorageView({ status, onImport, onDone, onCancel }: Props) {
   // One key storage at a time: switching unpairs the other one's apps
   // (certificate-password-pairing-plan.md §5).
   const leaving = status.servers.filter((s) => s.keySource !== choice);
+  const target = choice === 'pkcs12' ? 'your certificate' : `the ${chip}`;
 
   const proceed = async () => {
     if (choice === 'pkcs12' && !storage.certificate) {
@@ -59,62 +61,49 @@ export function KeyStorageView({ status, onImport, onDone, onCancel }: Props) {
 
   if (result) {
     return (
-      <main className="page">
-        <section className="card center">
-          <div className="big-check" aria-hidden="true">✓</div>
-          <h1>Switched to {choice === 'pkcs12' ? 'your certificate' : chip}</h1>
-          {result.queued.length > 0 && (
-            <p className="muted">
-              {result.queued.join(', ')} couldn't be reached: removed from this computer, and the agent tells{' '}
-              {result.queued.length === 1 ? 'it' : 'them'} once {result.queued.length === 1 ? "it's" : "they're"} back.
-            </p>
-          )}
-          {result.failed.length > 0 && <p className="error">Couldn't remove: {result.failed.join(', ')}.</p>}
-          <IconButton icon="check" label="Done" variant="primary" tip="above" onClick={onDone} autoFocus />
-        </section>
-      </main>
+      <ResultView title={`Switched to ${target}`} onDone={onDone}>
+        {result.queued.length > 0 && (
+          <Notice tone="info">
+            {result.queued.join(', ')} couldn't be reached. Removed here; {result.queued.length === 1 ? "it'll" : "they'll"} be told
+            once back.
+          </Notice>
+        )}
+        {result.failed.length > 0 && <Notice tone="error">Couldn't remove: {result.failed.join(', ')}.</Notice>}
+      </ResultView>
     );
   }
 
   if (confirming) {
-    const from = choice === 'pkcs12' ? `the ${chip}` : 'your certificate';
     return (
       <main className="page">
-        <header className="page-header">
-          <p className="eyebrow">Key storage</p>
-          <h1>Switch to {choice === 'pkcs12' ? 'your certificate' : `the ${chip}`}?</h1>
-        </header>
+        <PageHeader title={`Switch to ${target}?`} sub="These apps will be unpaired and their keys deleted." onBack={() => setConfirming(false)} />
         <section className="card">
-          <p className="lead">
-            {leaving.length === 1 ? 'This app is' : 'These apps are'} paired with {from}. Switching unpairs{' '}
-            {leaving.length === 1 ? 'it' : 'them'} and deletes {leaving.length === 1 ? 'its keys' : 'their keys'} from this
-            computer:
-          </p>
-          <ul className="switch-list">
+          <ul className="leaving-list">
             {leaving.map((s) => (
-              <li key={s.id}>
-                <strong>{s.name}</strong> <span className="mono muted small">{s.origin}</span>
+              <li key={s.id} className="row">
+                <div className="monogram">{monogram(s.name)}</div>
+                <div className="grow">
+                  <div className="title">{s.name}</div>
+                  <div className="mono sub">{displayOrigin(s.origin)}</div>
+                </div>
               </li>
             ))}
           </ul>
-          <p className="muted small">Pair them again afterwards with “Pair this computer” on each app.</p>
+          <Hint>Pair them again afterwards.</Hint>
           {choice === 'platform' && storage.certificate && (
-            <label className="check-row small">
+            <label className="check-row">
               <input type="checkbox" checked={removeCertificate} onChange={(e) => setRemoveCertificate(e.target.checked)} />
-              Also remove the certificate ({storage.certificate.commonName}) from this computer
+              Also remove {storage.certificate.commonName}'s certificate
             </label>
           )}
         </section>
         <div className="actions">
-          <IconButton icon="back" label="Cancel" tip="above" disabled={busy} onClick={() => setConfirming(false)} />
-          <IconButton
-            icon="unlink"
-            label={busy ? 'Unpairing…' : 'Unpair & switch'}
-            variant="primary"
-            tip="above"
-            disabled={busy}
-            onClick={() => void switchNow()}
-          />
+          <Button size="lg" disabled={busy} onClick={() => setConfirming(false)}>
+            Cancel
+          </Button>
+          <Button size="lg" variant="primary" icon="unlink" disabled={busy} onClick={() => void switchNow()}>
+            {busy ? 'Unpairing…' : 'Unpair & switch'}
+          </Button>
         </div>
       </main>
     );
@@ -122,14 +111,28 @@ export function KeyStorageView({ status, onImport, onDone, onCancel }: Props) {
 
   return (
     <main className="page">
-      <header className="page-header">
-        <p className="eyebrow">Kukux Sign Agent</p>
-        <h1>Where should your signing key live?</h1>
-        <p className="muted">You can change this later. Each app you pair uses the storage chosen when you pair it.</p>
-      </header>
+      <PageHeader title="Where should your key live?" sub="You can change this later." onBack={onCancel} />
 
-      <div className="choices" role="radiogroup" aria-label="Key storage">
+      <fieldset className="choices">
+        <legend className="visually-hidden">Key storage</legend>
         <label className={`choice ${choice === 'platform' ? 'is-selected' : ''}`}>
+          <span className={`tile ${choice === 'platform' ? '' : 'tile-neutral'}`}>
+            <Icon name="chip" size={22} />
+          </span>
+          <span className="grow">
+            <span className="title-row">
+              <span className="title">{isMac ? 'Secure Enclave' : 'TPM + Windows Hello'}</span>
+              {storage.platform.available && <span className="badge">Recommended</span>}
+            </span>
+            {storage.platform.available ? (
+              <span className="sub">
+                New key made in this {isMac ? "Mac's" : "PC's"} chip. Can't be copied. {isMac ? 'Touch ID' : 'Windows Hello'} approves
+                each use.
+              </span>
+            ) : (
+              <span className="choice-warning">No security chip here. The key would be software only.</span>
+            )}
+          </span>
           <input
             type="radio"
             name="storage"
@@ -137,25 +140,27 @@ export function KeyStorageView({ status, onImport, onDone, onCancel }: Props) {
             onChange={() => setChoice('platform')}
             autoFocus={choice === 'platform'}
           />
-          <span className="choice-icon" aria-hidden="true">
-            <Icon name="chip" size={22} />
-          </span>
-          <span className="choice-body">
-            <span className="choice-title">
-              {isMac ? `This Mac's ${chip}` : `This PC's ${chip} and Windows Hello`}
-            </span>
-            {storage.platform.available ? (
-              <span className="muted small">
-                A new key is made inside the chip and can't be copied. {isMac ? 'Touch ID or your password' : 'Windows Hello'}{' '}
-                approves each use.
-              </span>
-            ) : (
-              <span className="warning small">This computer has no security chip; keys would be software only.</span>
-            )}
-          </span>
         </label>
 
-        <label className={`choice ${choice === 'pkcs12' ? 'is-selected' : ''} ${storage.certificatesSupported ? '' : 'is-disabled'}`}>
+        <label
+          className={`choice ${choice === 'pkcs12' ? 'is-selected' : ''} ${storage.certificatesSupported ? '' : 'is-disabled'}`}
+        >
+          <span className={`tile ${choice === 'pkcs12' ? '' : 'tile-neutral'}`}>
+            <Icon name="certificate" size={22} />
+          </span>
+          <span className="grow">
+            <span className="title">Certificate file</span>
+            {storage.certificatesSupported ? (
+              <span className="sub">Import a .p12 or .pfx, like PNPKI. Its password approves each use.</span>
+            ) : (
+              <span className="choice-warning">Needs macOS 15 or later.</span>
+            )}
+            {storage.certificate && (
+              <span className="sub">
+                Imported: <strong>{storage.certificate.commonName}</strong> · until {formatDate(storage.certificate.notAfter)}
+              </span>
+            )}
+          </span>
           <input
             type="radio"
             name="storage"
@@ -164,37 +169,13 @@ export function KeyStorageView({ status, onImport, onDone, onCancel }: Props) {
             onChange={() => setChoice('pkcs12')}
             autoFocus={choice === 'pkcs12'}
           />
-          <span className="choice-icon" aria-hidden="true">
-            <Icon name="certificate" size={22} />
-          </span>
-          <span className="choice-body">
-            <span className="choice-title">Software certificate (PKCS#12)</span>
-            {storage.certificatesSupported ? (
-              <span className="muted small">
-                Import a .p12 or .pfx file, such as your PNPKI certificate. Your name and issuer travel with each signature.
-              </span>
-            ) : (
-              <span className="warning small">Importing a certificate needs macOS 15 or later.</span>
-            )}
-            {storage.certificate && (
-              <span className="small">
-                Imported: <strong>{storage.certificate.commonName}</strong> · until {formatDate(storage.certificate.notAfter)}
-              </span>
-            )}
-          </span>
         </label>
-      </div>
+      </fieldset>
 
       <div className="actions">
-        {onCancel && <IconButton icon="back" label="Back" tip="above" onClick={onCancel} />}
-        <IconButton
-          icon="check"
-          label={choice === 'pkcs12' && !storage.certificate ? 'Continue to import' : 'Continue'}
-          variant="primary"
-          tip="above"
-          disabled={busy}
-          onClick={() => void proceed()}
-        />
+        <Button size="lg" variant="primary" iconEnd="forward" disabled={busy} onClick={() => void proceed()}>
+          {choice === 'pkcs12' && !storage.certificate ? 'Continue to import' : 'Continue'}
+        </Button>
       </div>
     </main>
   );

@@ -1,30 +1,26 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
-import type { CertificateView, KeySourceView, StatusView as Status, UpdateView } from '../../shared/ipc';
-import { IconButton, type IconName } from '../icons';
-import { deviceTypeLabel, formatDate, keyStorageLabel, pairingKeyLabel, presenceLabel } from '../labels';
+import type { CertificateView, KeySourceView, ServerView, StatusView as Status, UpdateView } from '../../shared/ipc';
+import { Icon } from '../icons';
+import { deviceTypeLabel, formatDate, keyStorageLabel, presenceLabel } from '../labels';
+import { Button, Hint, IconButton, Notice, displayOrigin, monogram } from '../ui';
 import { OfflinePrompt, useUnpair } from '../unpair';
 import { AboutDialog } from './AboutDialog';
 import { KeyStorageView } from './KeyStorageView';
 
 interface Props {
   onPair: () => void;
-  /** Change next to Key storage (pkcs12-key-storage-plan.md §7.3). */
+  /** Change next to the key storage (pkcs12-key-storage-plan.md §7.3). */
   onChangeStorage: () => void;
   onImport: () => void;
 }
 
 export function StatusView({ onPair, onChangeStorage, onImport }: Props) {
   const [status, setStatus] = useState<Status | null>(null);
-  const [retrying, setRetrying] = useState<string | null>(null);
-  const [certificateNote, setCertificateNote] = useState<string | null>(null);
-  // "Keep for now" on the banner about the other storage's pairings (certificate-password-pairing-plan.md §5.3).
-  const [keepMixed, setKeepMixed] = useState(false);
 
   const refresh = useCallback(() => {
     void window.agent.getStatus().then(setStatus);
   }, []);
-  const unpairing = useUnpair(refresh);
 
   useEffect(() => {
     refresh();
@@ -37,304 +33,406 @@ export function StatusView({ onPair, onChangeStorage, onImport }: Props) {
     return <KeyStorageView status={status} onImport={onImport} onDone={refresh} />;
   }
 
+  return (
+    <main className="page">
+      <Header status={status} />
+      <ComputerCard status={status} onChange={onChangeStorage} onImport={onImport} onChanged={refresh} />
+      <AppsCard status={status} onPair={onPair} onChanged={refresh} />
+      <DeveloperCard status={status} onChanged={refresh} />
+    </main>
+  );
+}
+
+// ── This computer ──
+
+function ComputerCard({
+  status,
+  onChange,
+  onImport,
+  onChanged,
+}: {
+  status: Status;
+  onChange: () => void;
+  onImport: () => void;
+  onChanged: () => void;
+}) {
+  const [note, setNote] = useState<string | null>(null);
+  const caps = status.capabilities;
+  const certificateMode = status.keyStorage.selected === 'pkcs12';
+  const certificate = status.keyStorage.certificate;
+
+  const remove = async (c: CertificateView) => {
+    setNote(null);
+    const result = await window.agent.removeCertificate(c.id);
+    if (!result.ok) setNote(result.error);
+    onChanged();
+  };
+
+  let tile: 'accent' | 'neutral' | 'warn' = 'accent';
+  let title: ReactNode;
+  let sub: string;
+  if (certificateMode && certificate) {
+    title = (
+      <span className="title-row">
+        <span className="title">{certificate.commonName}</span>
+        {certificate.pnpki && <span className="badge">PNPKI</span>}
+      </span>
+    );
+    sub = 'Password approves each use';
+  } else if (certificateMode) {
+    tile = 'neutral';
+    title = <span className="title">Certificate file</span>;
+    sub = 'No certificate imported yet';
+  } else if (caps.hardware) {
+    title = <span className="title">{keyStorageLabel(status.platform, 'platform')}</span>;
+    sub = caps.userPresence ? `Approve with ${presenceLabel(status.platform, true)}` : 'No OS prompt on use';
+  } else {
+    tile = 'warn';
+    title = (
+      <span className="title-row">
+        <span className="title">Software key</span>
+        <span className="badge badge-warn">Lower assurance</span>
+      </span>
+    );
+    sub = 'No security chip found';
+  }
+
+  return (
+    <section className="card" aria-labelledby="computer-title">
+      <h2 id="computer-title" className="card-label">
+        This computer
+      </h2>
+      <div className="row">
+        <div className={`tile ${tile === 'neutral' ? 'tile-neutral' : tile === 'warn' ? 'tile-warn' : ''}`}>
+          <Icon name={certificateMode ? 'certificate' : 'chip'} size={22} />
+        </div>
+        <div className="grow">
+          {title}
+          <div className="sub">{sub}</div>
+        </div>
+        <Button icon="switch" onClick={onChange}>
+          Change
+        </Button>
+      </div>
+
+      {!certificateMode && caps.hardware && (
+        <div className="chips">
+          <Chip>Hardware key</Chip>
+          {caps.attestation && <Chip>Attested</Chip>}
+          <Chip>Can't be copied</Chip>
+        </div>
+      )}
+
+      {certificateMode && !certificate && (
+        <Notice
+          tone="warning"
+          actions={
+            <Button size="sm" variant="primary" icon="download" onClick={onImport}>
+              Import certificate
+            </Button>
+          }
+        >
+          Import your .p12 or .pfx to pair apps.
+        </Notice>
+      )}
+
+      {certificate?.expiresSoon && certificateMode && (
+        <Notice tone="warning" role="status">
+          <strong>Expires {formatDate(certificate.notAfter)}.</strong> Import the renewed file.
+        </Notice>
+      )}
+
+      {certificateMode && certificate && (
+        <details>
+          <summary>Certificate details</summary>
+          <dl className="facts facts-small selectable">
+            <dt>Issuer</dt>
+            <dd>{certificate.issuerName}</dd>
+            <dt>Valid</dt>
+            <dd>
+              {formatDate(certificate.notBefore)} – {formatDate(certificate.notAfter)}
+            </dd>
+            <dt>Serial</dt>
+            <dd className="mono">{certificate.serialHex}</dd>
+            <dt>SHA-256</dt>
+            <dd className="mono">{certificate.fingerprint256}</dd>
+            <dt>Key</dt>
+            <dd>{certificateHolder(status.platform)}</dd>
+          </dl>
+          <div className="notice-actions details-actions">
+            <Button size="sm" icon="download" onClick={onImport}>
+              Import another
+            </Button>
+            <Button
+              size="sm"
+              icon="trash"
+              disabled={certificate.usedBy.length > 0}
+              title={certificate.usedBy.length > 0 ? 'Unpair its apps to remove it' : undefined}
+              onClick={() => void remove(certificate)}
+            >
+              Remove
+            </Button>
+          </div>
+        </details>
+      )}
+
+      {note && (
+        <Notice tone="error" role="alert">
+          {note}
+        </Notice>
+      )}
+    </section>
+  );
+}
+
+function Chip({ children }: { children: ReactNode }) {
+  return (
+    <span className="chip">
+      <Icon name="check" size={14} stroke={2} />
+      {children}
+    </span>
+  );
+}
+
+function certificateHolder(platform: Status['platform']): string {
+  if (platform === 'macos') return 'Encrypted, sealed to this Mac';
+  if (platform === 'windows') return 'Encrypted, protected by Windows';
+  return 'Encrypted with its password';
+}
+
+// ── Paired apps: the only part that scrolls ──
+
+function AppsCard({ status, onPair, onChanged }: { status: Status; onPair: () => void; onChanged: () => void }) {
+  const [retrying, setRetrying] = useState<string | null>(null);
+  // "Keep" on the notice about the other storage's pairings (certificate-password-pairing-plan.md §5.3).
+  const [keepMixed, setKeepMixed] = useState(false);
+  const unpairing = useUnpair(onChanged);
+
+  const storage = status.keyStorage;
+  const selected: KeySourceView = storage.selected ?? 'platform';
+  const servers = status.servers;
+  // One key storage at a time (§5): pairings of the other one only survive from an older version.
+  const mixed = servers.filter((s) => s.keySource !== selected);
+  const canPair = selected === 'platform' || storage.certificate !== null;
+  const olderInUse = selected === 'pkcs12' ? storage.olderCertificates.filter((c) => c.usedBy.length > 0) : [];
+  const empty = servers.length === 0 && status.pendingRevokes.length === 0;
+
   const retry = async (origin: string) => {
     setRetrying(origin);
     try {
       await window.agent.retryRevokes(origin);
     } finally {
       setRetrying(null);
-      refresh();
+      onChanged();
     }
   };
 
-  const caps = status.capabilities;
-  const dev = status.developerMode;
-  const storage = status.keyStorage;
-  const selected: KeySourceView = storage.selected ?? 'platform';
-  const other: KeySourceView = selected === 'platform' ? 'pkcs12' : 'platform';
-  const certificate = storage.certificate;
-  // One key storage at a time (certificate-password-pairing-plan.md §5): every
-  // pairing is listed. Pairings of the other storage only survive from an
-  // older version (§5.3), and the banner below offers to unpair them.
-  const shown = status.servers;
-  const mixed = status.servers.filter((s) => s.keySource !== selected);
-  const canPair = selected === 'platform' || certificate !== null;
-
-  const unpairMixed = () => void window.agent.switchKeyStorage(selected).then(refresh);
-  const removeCertificate = async (c: CertificateView) => {
-    setCertificateNote(null);
-    const result = await window.agent.removeCertificate(c.id);
-    if (!result.ok) setCertificateNote(result.error);
-    refresh();
-  };
-
   return (
-    <main className="page">
-      <header className="page-header">
-        <h1>Kukux Sign Agent</h1>
-        <VersionRow version={status.version} platform={status.platform} capabilities={status.capabilities} />
-      </header>
+    <section className="card apps-card" aria-labelledby="apps-title">
+      <div className="card-head">
+        <h2 id="apps-title" className="card-label">
+          Paired apps
+        </h2>
+        {servers.length > 0 && <span className="badge badge-count">{servers.length}</span>}
+        <span className="grow" />
+        <Button
+          variant="primary"
+          icon="plus"
+          disabled={!canPair}
+          title={canPair ? undefined : 'Import your certificate first'}
+          onClick={onPair}
+        >
+          Pair app
+        </Button>
+      </div>
+      {!empty && <Hint>One account per app · one computer per account</Hint>}
 
-      <section className="card">
-        <h2>This computer</h2>
-        <dl className="facts">
-          <dt>Key storage</dt>
-          <dd>
-            <span className="storage-row">
-              {selected === 'pkcs12' ? (
-                <span className="badge badge-strong">
-                  {certificate ? `Certificate · ${certificate.commonName}` : keyStorageLabel(status.platform, 'pkcs12')}
-                </span>
-              ) : caps.hardware ? (
-                <span className="badge badge-strong">{keyStorageLabel(status.platform, 'platform')}</span>
-              ) : (
-                <span className="badge badge-weak">Software · lower assurance</span>
-              )}
-              <button type="button" className="link-button" onClick={onChangeStorage}>
-                Change
-              </button>
-            </span>
-            {selected === 'pkcs12' && certificate && (
-              <span className="muted small storage-detail">
-                {certificate.issuerName} · until {formatDate(certificate.notAfter)}
-              </span>
-            )}
-            {selected === 'pkcs12' && certificate?.expiresSoon && (
-              <span className="warning small storage-detail">Expires soon: renew it and import the new file.</span>
-            )}
-          </dd>
-          {(selected === 'platform' || certificate) && (
-            <>
-              <dt>Approval</dt>
-              <dd>
-                {selected === 'pkcs12' && certificate
-                  ? certificateApproval(status.platform, certificate)
-                  : caps.userPresence
-                    ? presenceLabel(status.platform, true)
-                    : 'Not available'}
-              </dd>
-            </>
-          )}
-          {selected === 'platform' && (
-            <>
-              <dt>Attestation</dt>
-              <dd>{caps.attestation ? 'Yes' : 'No'}</dd>
-            </>
-          )}
-        </dl>
-        {selected === 'pkcs12' && !certificate && (
-          <div className="warning small">
-            <p>No certificate imported yet. Import your .p12 or .pfx to pair apps with it.</p>
-            <IconButton icon="download" label="Import certificate" variant="primary" tip="above" onClick={onImport} />
-          </div>
-        )}
-        {selected === 'pkcs12' && certificate && (
-          <details className="other-devices small">
-            <summary className="muted">Certificate details</summary>
-            <dl className="facts certificate-facts">
-              <dt>Subject</dt>
-              <dd>{certificate.subject}</dd>
-              <dt>Issuer</dt>
-              <dd>{certificate.issuer}</dd>
-              <dt>Serial</dt>
-              <dd className="mono">{certificate.serialHex}</dd>
-              <dt>SHA-256</dt>
-              <dd className="mono">{certificate.fingerprint256}</dd>
-              <dt>Valid</dt>
-              <dd>
-                {formatDate(certificate.notBefore)} – {formatDate(certificate.notAfter)}
-              </dd>
-              <dt>Key held by</dt>
-              <dd>{certificateHolder(status.platform, certificate)}</dd>
-            </dl>
-            <div className="button-row">
-              <IconButton icon="download" label="Import a different certificate" tipAlign="start" onClick={onImport} />
-              <IconButton
-                icon="trash"
-                label={certificate.usedBy.length > 0 ? 'Unpair its apps to remove it' : 'Remove certificate'}
-                tipAlign="start"
-                onClick={() => void removeCertificate(certificate)}
-              />
-            </div>
-          </details>
-        )}
-        {certificateNote && (
-          <p className="error small" role="alert">
-            {certificateNote}
-          </p>
-        )}
-      </section>
-
-      <section className="card">
-        <div className="card-title-row">
-          <h2>Paired apps · {selected === 'pkcs12' ? 'certificate' : keyStorageLabel(status.platform, 'platform')}</h2>
-          <IconButton
-            icon="plus"
-            label={canPair ? 'Pair with an app' : 'Import your certificate first'}
-            variant="primary"
-            disabled={!canPair}
-            onClick={onPair}
-          />
-        </div>
-        <p className="muted small">
-          One signature per app on this computer, and one computer per account. To use another account for an app, unpair
-          it first.
-        </p>
+      <div className="apps-scroll">
         {unpairing.note && (
-          <p className="muted small" role="status">
+          <Notice tone="info" role="status">
             {unpairing.note}
-          </p>
+          </Notice>
         )}
-        {shown.length === 0 ? (
-          <p className="muted">
-            None yet. Open the website (<span className="mono">signature.uplb.edu.ph</span> for UPLB) and choose{' '}
-            <strong>Pair this computer</strong>.
-          </p>
+        {mixed.length > 0 && !keepMixed && (
+          <Notice
+            tone="warning"
+            role="alert"
+            actions={
+              <>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  icon="unlink"
+                  onClick={() => void window.agent.switchKeyStorage(selected).then(onChanged)}
+                >
+                  Unpair {mixed.length === 1 ? 'it' : 'them'}
+                </Button>
+                <Button size="sm" onClick={() => setKeepMixed(true)}>
+                  Keep for now
+                </Button>
+              </>
+            }
+          >
+            {mixed.map((s) => s.name).join(', ')} {mixed.length === 1 ? 'uses' : 'use'} the other key storage. Unpair, then pair
+            again.
+          </Notice>
+        )}
+        {olderInUse.map((c) => (
+          <Notice key={c.id} tone="warning">
+            {c.usedBy.join(', ')} still {c.usedBy.length === 1 ? 'signs' : 'sign'} with {c.commonName} (until{' '}
+            {formatDate(c.notAfter)}). Pair again to use the new certificate.
+          </Notice>
+        ))}
+
+        {empty ? (
+          <div className="empty">
+            <div className="empty-icon">
+              <Icon name="link" />
+            </div>
+            <div className="title">No apps yet</div>
+            <div className="sub">
+              On the app's website, choose <strong>Pair this computer</strong>.
+            </div>
+          </div>
         ) : (
-          <ul className="server-list">
-            {shown.map((s) => (
-              <li key={s.id} className="server">
-                <div>
-                  <div className="server-name">
-                    {s.name}
-                    {s.insecure && <span className="badge badge-weak badge-inline">HTTP</span>}
-                  </div>
-                  <div className="mono muted">{s.origin}</div>
-                  <div className="muted small">
-                    {[s.userName, s.deviceLabel, deviceTypeLabel(s.deviceType), pairingKeyLabel(s)]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </div>
-                  {s.otherDevices.length > 0 && (
-                    <details className="other-devices small">
-                      <summary className="muted">
-                        Also paired on {s.otherDevices.length} other {s.otherDevices.length === 1 ? 'device' : 'devices'}
-                      </summary>
-                      <ul>
-                        {s.otherDevices.map((d, i) => (
-                          <li key={i} className="muted">
-                            {d.label}
-                            {d.deviceType ? ` · ${deviceTypeLabel(d.deviceType)}` : ''}
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                  {unpairing.offline?.serverId === s.id && (
+          <ul className="app-list">
+            {servers.map((s) => (
+              <AppItem
+                key={s.id}
+                server={s}
+                otherStorage={s.keySource !== selected}
+                busy={unpairing.busy === s.id}
+                offline={unpairing.offline?.serverId === s.id}
+                onUnpair={() => void unpairing.unpair(s.id)}
+                prompt={
+                  unpairing.offline?.serverId === s.id && (
                     <OfflinePrompt
                       serverName={unpairing.offline.serverName}
                       busy={unpairing.busy === s.id}
                       onRemove={() => void unpairing.removeAnyway()}
                       onKeep={unpairing.keep}
                     />
-                  )}
-                </div>
-                <IconButton
-                  icon="unlink"
-                  label={unpairing.busy === s.id ? 'Unpairing…' : 'Unpair'}
-                  disabled={unpairing.busy === s.id || unpairing.offline?.serverId === s.id}
-                  onClick={() => void unpairing.unpair(s.id)}
-                />
-              </li>
+                  )
+                }
+              />
             ))}
-          </ul>
-        )}
-        {mixed.length > 0 && !keepMixed && (
-          <div className="warning small" role="alert">
-            <p>
-              {mixed.map((s) => s.name).join(', ')} {mixed.length === 1 ? 'is' : 'are'} paired with{' '}
-              {other === 'pkcs12' ? 'your certificate' : `the ${keyStorageLabel(status.platform, 'platform')}`}, not the key
-              storage you chose. Unpair {mixed.length === 1 ? 'it' : 'them'} so this computer holds one kind of key, then pair
-              again.
-            </p>
-            <div className="button-row">
-              <IconButton icon="unlink" label="Unpair them" variant="primary" tipAlign="start" onClick={unpairMixed} />
-              <IconButton icon="x" label="Keep for now" tipAlign="start" onClick={() => setKeepMixed(true)} />
-            </div>
-          </div>
-        )}
-        {selected === 'pkcs12' &&
-          storage.olderCertificates
-            .filter((c) => c.usedBy.length > 0)
-            .map((c) => (
-              <p key={c.id} className="warning small">
-                {c.usedBy.join(', ')} still {c.usedBy.length === 1 ? 'signs' : 'sign'} with your older certificate (
-                {c.commonName}, until {formatDate(c.notAfter)}). Pair {c.usedBy.length === 1 ? 'it' : 'them'} again to use{' '}
-                {certificate?.commonName ?? 'the new one'}.
-              </p>
-            ))}
-        {status.pendingRevokes.length > 0 && (
-          <ul className="server-list">
             {status.pendingRevokes.map((r) => (
-              <li key={`${r.origin}|${r.queuedAt}`} className="server">
-                <div>
-                  <div className="server-name">Waiting to tell {r.serverName}</div>
-                  <div className="mono muted">{r.origin}</div>
-                  <div className="muted small">
-                    Removed from this computer on {formatWhen(r.queuedAt)}. Until {r.serverName} hears, it still lists this
-                    computer, so your account can't pair another one. Retried every hour.
+              <li key={`${r.origin}|${r.queuedAt}`} className="app-item">
+                <div className="tile tile-sm tile-warn">
+                  <Icon name="clock" />
+                </div>
+                <div className="grow">
+                  <div className="title-row">
+                    <span className="title">{r.serverName}</span>
+                    <span className="badge badge-warn">Unpairing</span>
+                  </div>
+                  <div className="mono sub">{displayOrigin(r.origin)}</div>
+                  <div className="sub" title={`Removed here ${formatWhen(r.queuedAt)}. Until it hears, your account can't pair another computer.`}>
+                    Server not notified yet · retrying hourly
                   </div>
                 </div>
-                <IconButton
+                <Button
+                  size="sm"
                   icon="refresh"
-                  label={retrying === r.origin ? 'Retrying…' : 'Retry now'}
-                  className={retrying === r.origin ? 'is-spinning' : ''}
+                  spinning={retrying === r.origin}
                   disabled={retrying === r.origin}
                   onClick={() => void retry(r.origin)}
-                />
+                >
+                  Retry
+                </Button>
               </li>
             ))}
           </ul>
         )}
-      </section>
-
-      <section className="card">
-        <label className="toggle-row">
-          <span>
-            <span className="toggle-title">Developer mode</span>
-            <span className="muted small">
-              {dev.locked ? 'Always on in npm run dev.' : 'Allow local-network apps over HTTP, for testing.'}
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            role="switch"
-            className="switch"
-            checked={dev.on}
-            disabled={dev.locked}
-            onChange={(e) => void window.agent.setDeveloperMode(e.target.checked).then(refresh)}
-          />
-        </label>
-      </section>
-    </main>
+      </div>
+    </section>
   );
 }
 
-// The certificate's own password approves each use (certificate-password-pairing-plan.md §4).
-function certificateApproval(_platform: Status['platform'], _c: CertificateView): string {
-  return 'Certificate password';
-}
-
-function certificateHolder(platform: Status['platform'], _c: CertificateView): string {
-  if (platform === 'macos') return 'Encrypted with its password, sealed to this Mac';
-  if (platform === 'windows') return 'Encrypted with its password, protected by Windows';
-  return 'Encrypted with its password';
-}
-
-// The version line doubles as the update control: one small icon that turns
-// into Download / Restart when there's an update, and a short status word.
-function VersionRow({
-  version,
-  platform,
-  capabilities,
+function AppItem({
+  server: s,
+  otherStorage,
+  busy,
+  offline,
+  onUnpair,
+  prompt,
 }: {
-  version: string;
-  platform: Status['platform'];
-  capabilities: Status['capabilities'];
+  server: ServerView;
+  otherStorage: boolean;
+  busy: boolean;
+  offline: boolean;
+  onUnpair: () => void;
+  prompt: ReactNode;
 }) {
+  const others = s.otherDevices.length;
+  return (
+    <li className="app-item">
+      <div className="monogram">{monogram(s.name)}</div>
+      <div className="grow">
+        <div className="title-row">
+          <span className="title">{s.name}</span>
+          {s.insecure && <span className="badge badge-warn">HTTP</span>}
+          {otherStorage && <span className="badge badge-warn">Other key</span>}
+        </div>
+        <div className="mono sub">{displayOrigin(s.origin)}</div>
+        <div className="sub">{[s.userName, s.deviceLabel || deviceTypeLabel(s.deviceType)].filter(Boolean).join(' · ')}</div>
+        {others > 0 && (
+          <details>
+            <summary>
+              Also on {others} other {others === 1 ? 'device' : 'devices'}
+            </summary>
+            <ul>
+              {s.otherDevices.map((d, i) => (
+                <li key={i}>
+                  {d.label}
+                  {d.deviceType ? ` · ${deviceTypeLabel(d.deviceType)}` : ''}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+        {prompt}
+      </div>
+      <Button size="sm" icon="unlink" disabled={busy || offline} onClick={onUnpair}>
+        {busy ? 'Unpairing…' : 'Unpair'}
+      </Button>
+    </li>
+  );
+}
+
+// ── Developer mode ──
+
+function DeveloperCard({ status, onChanged }: { status: Status; onChanged: () => void }) {
+  const dev = status.developerMode;
+  return (
+    <section className="card dev-card">
+      <label className="toggle-row">
+        <span className="tile tile-xs tile-neutral">
+          <Icon name="code" />
+        </span>
+        <span className="grow">
+          <span className="toggle-title">Developer mode</span>
+          <span className="sub">{dev.locked ? 'Always on in npm run dev' : 'Allow local HTTP apps for testing'}</span>
+        </span>
+        <input
+          type="checkbox"
+          role="switch"
+          className="switch"
+          checked={dev.on}
+          disabled={dev.locked}
+          onChange={(e) => void window.agent.setDeveloperMode(e.target.checked).then(onChanged)}
+        />
+      </label>
+    </section>
+  );
+}
+
+// ── Header: name, version and the update control ──
+
+function Header({ status }: { status: Status }) {
   const [update, setUpdate] = useState<UpdateView>({ state: 'idle' });
-  const [showNotes, setShowNotes] = useState(false);
-  const closeNotes = useCallback(() => setShowNotes(false), []);
+  const [showAbout, setShowAbout] = useState(false);
+  const closeAbout = useCallback(() => setShowAbout(false), []);
 
   useEffect(() => {
     void window.agent.getUpdate().then(setUpdate);
@@ -343,91 +441,86 @@ function VersionRow({
 
   const check = () => void window.agent.checkForUpdates();
   const install = () => void window.agent.installUpdate();
-  const busy = update.state === 'checking' || update.state === 'downloading';
 
-  let note: string | null = null;
-  let button: {
-    icon: IconName;
-    label: string;
-    onClick: () => void;
-    accent?: boolean;
-  };
+  let note: ReactNode = null;
+  let control: ReactNode;
   switch (update.state) {
     case 'available':
-      note = `${update.release.version} available`;
-      button =
-        update.install === 'download'
-          ? {
-              icon: 'download',
-              label: `Download ${update.release.version}`,
-              onClick: install,
-              accent: true,
-            }
-          : {
-              icon: 'external',
-              label: 'Open download page',
-              onClick: install,
-              accent: true,
-            };
+      note = <span className="accent">{update.release.version} available</span>;
+      control =
+        update.install === 'download' ? (
+          <Button variant="soft" icon="download" onClick={install}>
+            Update
+          </Button>
+        ) : (
+          <Button variant="soft" icon="external" onClick={install}>
+            Download
+          </Button>
+        );
       break;
     case 'downloading':
-      note = `Downloading ${update.percent}%`;
-      button = { icon: 'refresh', label: 'Downloading…', onClick: check };
+      note = <span>Downloading {update.percent}%</span>;
+      control = <IconButton icon="refresh" label="Downloading…" spinning disabled />;
       break;
     case 'ready':
-      note = `${update.release.version} ready`;
-      button = {
-        icon: 'restart',
-        label: 'Restart to update',
-        onClick: install,
-        accent: true,
-      };
+      note = <span className="accent">{update.release.version} ready</span>;
+      control = (
+        <Button variant="soft" icon="refresh" onClick={install}>
+          Restart
+        </Button>
+      );
       break;
     case 'checking':
-      button = { icon: 'refresh', label: 'Checking…', onClick: check };
+      note = <span>Checking…</span>;
+      control = <IconButton icon="refresh" label="Checking…" spinning disabled />;
       break;
     case 'up_to_date':
-      note = 'Up to date';
-      button = {
-        icon: 'refresh',
-        label: `Checked ${formatTime(update.checkedAt)} · check again`,
-        onClick: check,
-      };
+      note = (
+        <span className="ok">
+          <Icon name="checkCircle" size={14} stroke={2} />
+          Up to date
+        </span>
+      );
+      control = <IconButton icon="refresh" label={`Checked ${formatTime(update.checkedAt)} · check again`} onClick={check} />;
       break;
     case 'error':
-      note = 'Update check failed';
-      button = { icon: 'refresh', label: 'Try again', onClick: check };
+      note = (
+        <span className="error" title={update.message}>
+          Update check failed
+        </span>
+      );
+      control = <IconButton icon="refresh" label="Try again" onClick={check} />;
       break;
     default:
-      button = { icon: 'refresh', label: 'Check for updates', onClick: check };
+      control = <IconButton icon="refresh" label="Check for updates" onClick={check} />;
   }
 
   return (
-    <div className="version-row" aria-live="polite">
-      <button type="button" className="version-link" title="About this app" onClick={() => setShowNotes(true)}>
-        Version {version}
-      </button>
-      {note && (
-        <span
-          className={update.state === 'error' ? 'error small' : button.accent ? 'accent small' : 'muted small'}
-          title={update.state === 'error' ? update.message : undefined}
-        >
-          · {note}
-        </span>
+    <header className="row">
+      <div className="app-tile">
+        <Icon name="shield" size={22} />
+      </div>
+      <div className="grow">
+        <h1 className="app-title">Kukux Sign Agent</h1>
+        <div className="version-line" aria-live="polite">
+          <button type="button" className="link-btn" title="About this app" onClick={() => setShowAbout(true)}>
+            v{status.version}
+          </button>
+          {note && <span aria-hidden="true">·</span>}
+          {note}
+        </div>
+      </div>
+      {control}
+      {showAbout && (
+        <AboutDialog
+          version={status.version}
+          platform={status.platform}
+          capabilities={status.capabilities}
+          update={update}
+          onClose={closeAbout}
+        />
       )}
-      <IconButton
-        icon={button.icon}
-        label={button.label}
-        size="small"
-        tipAlign="start"
-        className={`${update.state === 'checking' || update.state === 'downloading' ? 'is-spinning' : ''} ${button.accent ? 'is-accent' : ''}`}
-        disabled={busy}
-        onClick={button.onClick}
-      />
-      {showNotes && (
-        <AboutDialog version={version} platform={platform} capabilities={capabilities} update={update} onClose={closeNotes} />
-      )}
-    </div>
+    </header>
   );
 }
 
