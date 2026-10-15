@@ -21,7 +21,6 @@ export const IPC = {
   checkForUpdates: 'agent:check-for-updates',
   installUpdate: 'agent:install-update',
   openReleases: 'agent:open-releases',
-  fitContent: 'agent:fit-content',
   // Key storage and certificates (pkcs12-key-storage-plan.md §7.6)
   setKeyStorage: 'agent:set-key-storage',
   chooseCertificateFile: 'agent:choose-certificate-file',
@@ -265,8 +264,6 @@ export interface AgentBridge {
   installUpdate(): Promise<void>;
   /** Opens the GitHub releases page in the browser. */
   openReleases(): Promise<void>;
-  /** Tells the main process how tall the page's content is, so the window fits it. */
-  fitContent(height: number): Promise<void>;
   setKeyStorage(storage: KeySourceView): Promise<void>;
   /**
    * Unpairs every app paired with the other storage (server first, queued if
