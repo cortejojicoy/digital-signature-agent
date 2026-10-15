@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 
 import type { JobState, JobView } from '../../shared/ipc';
-import { Icon, IconButton } from '../icons';
+import { Icon } from '../icons';
 import { currentPlatform, deviceTypeLabel, presenceLabel, protectionLabel } from '../labels';
+import { AppHeader, Button, Hint, Notice, PasswordField, ResultView, displayOrigin } from '../ui';
 
 const ARM_DELAY_MS = 1000;
 
@@ -41,8 +42,8 @@ const PURPOSES: Record<string, string> = {
 
 // What the finished states say, per purpose.
 const WORDS = {
-  sign: { waiting: 'Signing', done: 'Signed', declined: 'Declined', nothing: 'Nothing was signed.', failed: 'Signing failed' },
-  login: { waiting: 'Signing in to', done: 'Signed in', declined: 'Denied', nothing: 'Nobody was signed in.', failed: 'Sign-in failed' },
+  sign: { busy: 'Signing…', done: 'Signed', declined: 'Declined', nothing: 'Nothing was signed.', failed: 'Signing failed' },
+  login: { busy: 'Signing in…', done: 'Signed in', declined: 'Denied', nothing: 'Nobody was signed in.', failed: 'Sign-in failed' },
 };
 
 // Confirm window for each job (desktop-agent-plan.md §7.4). This is UX: the
@@ -74,64 +75,29 @@ export function ConfirmView({ jobId }: { jobId: string }) {
   }, [jobId]);
 
   if (job === undefined) return <main className="page" aria-busy="true" />;
-  if (job === null) {
-    return (
-      <main className="page">
-        <section className="card center">
-          <h1>Request expired</h1>
-          <p className="muted">Start again in the web app.</p>
-        </section>
-      </main>
-    );
-  }
+  if (job === null) return <ResultView tone="neutral" title="Request expired" sub="Start again in the web app." />;
 
   const platform = currentPlatform();
   const words = job.login ? WORDS.login : WORDS.sign;
+  const subject = `“${job.login ? job.serverName : job.documentTitle}”`;
 
   if (state) {
-    return (
-      <main className="page">
-        <section className="card center" aria-live="polite">
-          {state.state === 'signing' && (
-            <>
-              <div className="spinner" aria-hidden="true" />
-              <h1>{job.login ? 'Signing in…' : 'Signing…'}</h1>
-              <p className="muted">
-                {words.waiting} “{job.login ? job.serverName : job.documentTitle}” with your certificate
-              </p>
-            </>
-          )}
-          {state.state === 'waiting_for_os_prompt' && (
-            <>
-              <div className="spinner" aria-hidden="true" />
-              <h1>Approve with {presenceLabel(platform, job.userPresence)}</h1>
-              <p className="muted">
-                {words.waiting} “{job.login ? job.serverName : job.documentTitle}”
-              </p>
-            </>
-          )}
-          {state.state === 'completed' && (
-            <>
-              <div className="big-check" aria-hidden="true">✓</div>
-              <h1>{words.done}</h1>
-              <p className="muted">Return to your browser.</p>
-            </>
-          )}
-          {state.state === 'rejected' && (
-            <>
-              <h1>{words.declined}</h1>
-              <p className="muted">{words.nothing}</p>
-            </>
-          )}
-          {state.state === 'failed' && (
-            <>
-              <h1>{words.failed}</h1>
-              <p className="error">{state.error}</p>
-            </>
-          )}
-        </section>
-      </main>
-    );
+    switch (state.state) {
+      case 'signing':
+        return <ResultView tone="busy" title={words.busy} sub={subject} />;
+      case 'waiting_for_os_prompt':
+        return <ResultView tone="busy" title={`Approve with ${presenceLabel(platform, job.userPresence)}`} sub={subject} />;
+      case 'completed':
+        return <ResultView title={words.done} sub="Return to your browser." />;
+      case 'rejected':
+        return <ResultView tone="neutral" title={words.declined} sub={words.nothing} />;
+      case 'failed':
+        return (
+          <ResultView tone="error" title={words.failed}>
+            <Notice tone="error">{state.error}</Notice>
+          </ResultView>
+        );
+    }
   }
 
   const decline = () => void window.agent.rejectJob(jobId);
@@ -149,125 +115,146 @@ export function ConfirmView({ jobId }: { jobId: string }) {
       void window.agent.approveJob(jobId);
     }
   };
+  const key = needsPassword
+    ? null
+    : `${protectionLabel(job.protection)} · ${presenceLabel(platform, job.userPresence)}`;
+
   const passwordField = needsPassword && (
-    <CertificatePassword
-      value={password}
-      onChange={setPassword}
-      error={passwordError}
-      waitSeconds={waiting}
-      certificateName={job.certificateName}
+    <>
+      <PasswordField
+        label="Certificate password"
+        value={password}
+        onChange={setPassword}
+        disabled={waiting > 0}
+        enterSubmits={false}
+        autoFocus
+      />
+      {passwordError && (
+        <Notice tone="error" role="alert">
+          {waiting > 0 ? `${passwordError.replace(/ Try again in .*$/, '')} Try again in ${waiting} s.` : passwordError}
+        </Notice>
+      )}
+    </>
+  );
+
+  const header = (
+    <AppHeader
+      eyebrow={job.login ? 'Sign-in request' : 'Signing request'}
+      name={job.serverName}
+      detail={<span className="mono">{displayOrigin(job.origin)}</span>}
     />
   );
 
+  const actions = (
+    <div className="actions-split">
+      <Button size="block" icon="x" disabled={!armed} onClick={decline}>
+        {job.login ? 'Deny' : 'Decline'}
+      </Button>
+      <Button
+        size="block"
+        variant="primary"
+        icon={needsPassword ? (job.login ? 'check' : 'pen') : job.userPresence ? 'fingerprint' : 'check'}
+        disabled={!canApprove}
+        onClick={approve}
+      >
+        {needsPassword && !job.login ? 'Sign' : 'Approve'}
+      </Button>
+    </div>
+  );
+
   if (job.login) {
+    const code = job.login.matchCode;
     return (
       <main className="page">
-        <header className="page-header">
-          <p className="eyebrow">Sign-in request from</p>
-          <h1>{job.serverName}</h1>
-          <p className="mono muted">{job.origin}</p>
-        </header>
-
-        <section className="card center">
-          <h1>
-            Does your browser show <span className="match-code">{job.login.matchCode}</span>?
-          </h1>
-          <p className="lead muted">{job.documentTitle}</p>
+        {header}
+        <section className="card match-card">
+          <div className="sub">Does your browser show this code?</div>
+          {code.length <= 6 ? (
+            <div className="match-code" aria-label={`Match code ${code.split('').join(' ')}`}>
+              {code.split('').map((c, i) => (
+                <span key={i} aria-hidden="true">
+                  {c}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="match-code-text">{code}</div>
+          )}
         </section>
 
         <section className="card">
           <dl className="facts">
-            <dt>Browser</dt>
-            <dd>{job.login.browser || 'Unknown'}</dd>
-            <dt>Address</dt>
-            <dd className="mono">{job.login.ip || 'Unknown'}</dd>
             {job.signerName && (
               <>
-                <dt>Signing in as</dt>
-                <dd>{job.signerName}</dd>
+                <dt>Account</dt>
+                <dd>
+                  <strong>{job.signerName}</strong>
+                </dd>
               </>
             )}
+            <dt>Browser</dt>
+            <dd>{job.login.browser || 'Unknown'}</dd>
+            <dt>IP address</dt>
+            <dd className="mono">{job.login.ip || 'Unknown'}</dd>
+            <dt>Device</dt>
+            <dd>{deviceTypeLabel(job.deviceType)}</dd>
             <dt>Key</dt>
-            <dd>
-              {deviceTypeLabel(job.deviceType)} ·{' '}
-              {job.passwordRequired ? 'Certificate · certificate password' : `${protectionLabel(job.protection)} · ${presenceLabel(platform, job.userPresence)}`}
-            </dd>
+            <dd>{key ?? 'Certificate password'}</dd>
           </dl>
         </section>
 
         {passwordField}
-
-        <p className="muted small">Approve only if the code matches and you just chose Sign in in your browser.</p>
-
-        <div className="actions">
-          <button type="button" className="button button-quiet button-icon" disabled={!armed} onClick={decline}>
-            <Icon name="x" />
-            Deny
-          </button>
-          <button type="button" className="button button-primary button-icon" disabled={!canApprove} onClick={approve}>
-            <Icon name="check" />
-            Approve
-          </button>
-        </div>
+        <Hint>Only if the codes match and you just chose Sign in.</Hint>
+        {actions}
       </main>
     );
   }
 
   return (
     <main className="page">
-      <header className="page-header">
-        <p className="eyebrow">Signing request from</p>
-        <h1>{job.serverName}</h1>
-        <p className="mono muted">{job.origin}</p>
-      </header>
+      {header}
 
       {job.transfer && (
-        <p className="lead">
-          Move <strong>{job.transfer.name}</strong>’s signature to a new computer ({job.transfer.device})?
-        </p>
-      )}
-      {job.requestingApp && (
-        <p className="lead">
-          <strong>{job.requestingApp}</strong> asks: {job.documentTitle}
-        </p>
+        <Notice tone="info">
+          Move <strong>{job.transfer.name}</strong>’s signature to {job.transfer.device}?
+        </Notice>
       )}
 
       <section className="card">
-        <dl className="facts">
-          <dt>Document</dt>
-          <dd className="document-title">{job.documentTitle}</dd>
-          <dt>Signing as</dt>
-          <dd>{job.signerName}</dd>
+        <div className="row row-top">
+          <span className="tile tile-sm">
+            <Icon name="document" size={20} />
+          </span>
+          <div className="grow">
+            <div className="sub">{job.requestingApp ? `Requested by ${job.requestingApp}` : PURPOSES[job.purpose] ?? job.purpose}</div>
+            <div className="document-title">{job.documentTitle}</div>
+          </div>
+        </div>
+        <dl className="facts divider-top">
+          <dt>Signer</dt>
+          <dd>
+            <strong>{job.signerName}</strong>
+          </dd>
           {job.certificateName && (
             <>
               <dt>Certificate</dt>
               <dd>{job.certificateName}</dd>
             </>
           )}
-          <dt>Action</dt>
-          <dd>{PURPOSES[job.purpose] ?? job.purpose}</dd>
-          <dt>Key</dt>
-          <dd>
-            {deviceTypeLabel(job.deviceType)} ·{' '}
-            {job.passwordRequired ? 'Certificate · certificate password' : `${protectionLabel(job.protection)} · ${presenceLabel(platform, job.userPresence)}`}
-          </dd>
+          <dt>Device</dt>
+          <dd>{deviceTypeLabel(job.deviceType)}</dd>
+          {key && (
+            <>
+              <dt>Key</dt>
+              <dd>{key}</dd>
+            </>
+          )}
         </dl>
       </section>
 
       {passwordField}
-
-      <p className="muted small">Approve only if you just started this in your browser.</p>
-
-      <div className="actions">
-        <button type="button" className="button button-quiet button-icon" disabled={!armed} onClick={decline}>
-          <Icon name="x" />
-          Decline
-        </button>
-        <button type="button" className="button button-primary button-icon" disabled={!canApprove} onClick={approve}>
-          <Icon name="check" />
-          {needsPassword ? 'Sign' : 'Approve'}
-        </button>
-      </div>
+      <Hint>Only if you just started this in your browser.</Hint>
+      {actions}
     </main>
   );
 }
@@ -289,56 +276,3 @@ function useCountdown(until: number | null): number {
   }, [until]);
   return seconds;
 }
-
-/**
- * The certificate password, in place of Touch ID / Hello. Not in a form:
- * Enter never approves here, only a click on Sign.
- */
-function CertificatePassword({
-  value,
-  onChange,
-  error,
-  waitSeconds,
-  certificateName,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  error: string | null;
-  waitSeconds: number;
-  certificateName?: string;
-}) {
-  const [show, setShow] = useState(false);
-  return (
-    <section className="card">
-      <label className="field">
-        <span>Certificate password{certificateName ? ` · ${certificateName}` : ''}</span>
-        <div className="password-row">
-          <input
-            type={show ? 'text' : 'password'}
-            autoComplete="off"
-            spellCheck={false}
-            value={value}
-            disabled={waitSeconds > 0}
-            onChange={(e) => onChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') e.preventDefault();
-            }}
-            autoFocus
-          />
-          <IconButton
-            icon={show ? 'eyeOff' : 'eye'}
-            label={show ? 'Hide password' : 'Show password'}
-            tip="above"
-            onClick={() => setShow((v) => !v)}
-          />
-        </div>
-      </label>
-      {error && (
-        <p className="error small" role="alert">
-          {waitSeconds > 0 ? `${error.replace(/ Try again in .*$/, '')} Try again in ${waitSeconds} s.` : error}
-        </p>
-      )}
-    </section>
-  );
-}
-

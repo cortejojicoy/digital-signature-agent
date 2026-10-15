@@ -4,7 +4,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
 import type { PairingPreviewView, PairingProgressView, PairingResult } from '../../shared/ipc';
-import { IconButton } from '../icons';
+import { Icon } from '../icons';
+import { AppHeader, Button, Hint, Notice, PageHeader, PasswordField, ResultView, Spinner } from '../ui';
 
 interface Props {
   origin: string;
@@ -20,7 +21,6 @@ export function CertificatePairView({ origin, code, onDone, onImport }: Props) {
   const [preview, setPreview] = useState<PairingPreviewView | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
   const [password, setPassword] = useState('');
-  const [show, setShow] = useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<PairingProgressView | null>(null);
   const [paired, setPaired] = useState<Extract<PairingResult, { ok: true }> | null>(null);
@@ -50,18 +50,36 @@ export function CertificatePairView({ origin, code, onDone, onImport }: Props) {
     else setFailure(result);
   };
 
+  const failureNotice = failure && (
+    <Notice
+      tone="error"
+      role="alert"
+      actions={
+        <>
+          {failure.code === 'certificate_missing' && (
+            <Button size="sm" variant="primary" icon="download" onClick={onImport}>
+              Import certificate
+            </Button>
+          )}
+          {(failure.code === 'account_already_paired' || failure.code === 'certificate_in_use') && failure.manageUrl && (
+            <Button size="sm" icon="external" onClick={() => void window.agent.openDevicesPage()}>
+              Open signing devices
+            </Button>
+          )}
+        </>
+      }
+    >
+      {failure.error}
+    </Notice>
+  );
+
   if (paired) {
     return (
-      <main className="page">
-        <section className="card center">
-          <div className="big-check" aria-hidden="true">✓</div>
-          <h1>
-            {paired.rebound ? 'Re-paired' : 'Paired'} with {paired.serverName}
-          </h1>
-          <p className="muted">You'll use your certificate's password to sign. Go back to your browser to finish.</p>
-          <IconButton icon="check" label="Done" variant="primary" tip="above" onClick={onDone} autoFocus />
-        </section>
-      </main>
+      <ResultView
+        title={`${paired.rebound ? 'Re-paired' : 'Paired'} with ${paired.serverName}`}
+        sub="Return to your browser. Sign with your certificate password."
+        onDone={onDone}
+      />
     );
   }
 
@@ -69,107 +87,64 @@ export function CertificatePairView({ origin, code, onDone, onImport }: Props) {
   if (!preview) {
     return (
       <main className="page">
-        <header className="page-header">
-          <p className="eyebrow">Pair with your certificate</p>
-          <h1>{failure ? "Can't pair" : 'Checking…'}</h1>
-        </header>
-        {failure ? (
-          <div className="error" role="alert">
-            <p>{failure.error}</p>
-            {failure.code === 'certificate_missing' && (
-              <IconButton icon="download" label="Import certificate" variant="primary" tip="above" onClick={onImport} />
-            )}
-            {(failure.code === 'account_already_paired' || failure.code === 'certificate_in_use') && failure.manageUrl && (
-              <IconButton icon="external" label="Open signing devices" tip="above" onClick={() => void window.agent.openDevicesPage()} />
-            )}
-          </div>
-        ) : (
-          <div className="spinner" aria-hidden="true" />
-        )}
+        <PageHeader title={failure ? "Can't pair" : 'Checking…'} sub="Pair with certificate" />
+        {failure ? failureNotice : <Spinner />}
         <div className="actions">
-          <IconButton icon="back" label="Back" tip="above" onClick={onDone} />
+          <Button size="lg" icon="back" onClick={onDone}>
+            Back
+          </Button>
         </div>
       </main>
     );
   }
 
   return (
-    <main className="page">
-      <header className="page-header">
-        <p className="eyebrow">Pair with your certificate</p>
-        <h1>{preview.serverName}</h1>
-        <p className="mono muted">
-          {preview.host}
-          {preview.userName ? <span className="muted"> · for {preview.userName}</span> : null}
-        </p>
-      </header>
+    <form className="page" onSubmit={(e) => void submit(e)}>
+      <AppHeader
+        eyebrow="Pair with certificate"
+        name={preview.serverName}
+        detail={
+          <>
+            <span className="mono">{preview.host}</span>
+            {preview.userName ? ` · ${preview.userName}` : ''}
+          </>
+        }
+      />
 
-      <form className="card form" onSubmit={(e) => void submit(e)}>
-        <dl className="facts">
-          <dt>Certificate</dt>
-          <dd>
+      <section className="card">
+        <div className="inset-row">
+          <span className="accent-icon">
+            <Icon name="certificate" size={20} />
+          </span>
+          <span className="grow">
             <strong>{preview.certificateName}</strong>
-          </dd>
-        </dl>
-        {preview.repair && (
-          <p className="warning small">
-            {preview.serverName} is already paired with this certificate. Pairing again replaces it.
-          </p>
-        )}
-
-        <label className="field">
-          <span>Certificate password</span>
-          <div className="password-row">
-            <input
-              type={show ? 'text' : 'password'}
-              autoComplete="off"
-              spellCheck={false}
-              value={password}
-              disabled={running}
-              onChange={(e) => setPassword(e.target.value)}
-              autoFocus
-            />
-            <IconButton
-              icon={show ? 'eyeOff' : 'eye'}
-              label={show ? 'Hide password' : 'Show password'}
-              tip="above"
-              onClick={() => setShow((v) => !v)}
-            />
-          </div>
-        </label>
-
-        {running && progress?.stage === 'awaiting_confirmation' && (
-          <p className="progress">Confirm on {preview.serverName} in your browser.</p>
-        )}
-        {running && progress?.stage !== 'awaiting_confirmation' && <p className="progress">Pairing…</p>}
-        {failure && (
-          <div className="error" role="alert">
-            <p>{failure.error}</p>
-            {(failure.code === 'account_already_paired' || failure.code === 'certificate_in_use') && failure.manageUrl && (
-              <IconButton icon="external" label="Open signing devices" tip="above" onClick={() => void window.agent.openDevicesPage()} />
-            )}
-          </div>
-        )}
-
-        <p className="muted small">Pair only if you just chose “Pair this computer” on {preview.serverName}.</p>
-
-        <div className="actions">
-          <IconButton
-            icon={running ? 'x' : 'back'}
-            label={running ? 'Cancel pairing' : 'Cancel'}
-            tip="above"
-            onClick={() => (running ? void window.agent.cancelPairing() : onDone())}
-          />
-          <IconButton
-            type="submit"
-            icon="check"
-            label={running ? 'Pairing…' : 'Pair'}
-            variant="primary"
-            tip="above"
-            disabled={running || password === ''}
-          />
+          </span>
         </div>
-      </form>
-    </main>
+        {preview.repair && <Notice tone="warning">Already paired with this certificate. Pairing again replaces it.</Notice>}
+
+        <PasswordField label="Certificate password" value={password} onChange={setPassword} disabled={running} autoFocus />
+
+        {running && (
+          <div className="progress" role="status">
+            <Spinner small />
+            <span>
+              {progress?.stage === 'awaiting_confirmation' ? `Confirm on ${preview.serverName} in your browser` : 'Pairing…'}
+            </span>
+          </div>
+        )}
+        {failureNotice}
+
+        <Hint>Only if you just chose Pair this computer.</Hint>
+      </section>
+
+      <div className="actions">
+        <Button size="lg" onClick={() => (running ? void window.agent.cancelPairing() : onDone())}>
+          Cancel
+        </Button>
+        <Button type="submit" size="lg" variant="primary" icon="link" disabled={running || password === ''}>
+          {running ? 'Pairing…' : 'Pair'}
+        </Button>
+      </div>
+    </form>
   );
 }

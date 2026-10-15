@@ -3,7 +3,7 @@
 // signature here anyway, with the revoke queued, or keep the pairing.
 import { useState } from 'react';
 
-import { IconButton } from './icons';
+import { Button, Notice } from './ui';
 
 interface Offline {
   serverId: string;
@@ -26,7 +26,7 @@ export function useUnpair(onChanged?: () => void) {
       }
       setOffline(null);
       if (result.status === 'removed_locally') {
-        setNote(`Removed from this computer. ${serverName ?? 'The app'} will be told when it's reachable.`);
+        setNote(`Removed here. ${serverName ?? 'The app'} will be told once it's reachable.`);
       }
       return true;
     } finally {
@@ -58,23 +58,21 @@ export function OfflinePrompt({
   onKeep: () => void;
 }) {
   return (
-    <div className="warning small" role="alertdialog" aria-label={`Can't reach ${serverName}`}>
-      <p>
-        <strong>Can't reach {serverName}.</strong> Remove your signature from this computer anyway? {serverName} will keep
-        listing this computer until it reconnects. To pair a different computer before then, remove this one from{' '}
-        <strong>My signing devices</strong> on the web.
-      </p>
-      <div className="actions">
-        <IconButton icon="x" label="Keep the pairing" tip="above" disabled={busy} onClick={onKeep} />
-        <IconButton
-          icon="unlink"
-          label={busy ? 'Removing…' : 'Remove anyway'}
-          variant="primary"
-          tip="above"
-          disabled={busy}
-          onClick={onRemove}
-        />
-      </div>
-    </div>
+    <Notice
+      tone="warning"
+      role="alertdialog"
+      actions={
+        <>
+          <Button size="sm" icon="x" disabled={busy} onClick={onKeep}>
+            Keep
+          </Button>
+          <Button size="sm" variant="primary" icon="unlink" disabled={busy} onClick={onRemove}>
+            {busy ? 'Removing…' : 'Remove anyway'}
+          </Button>
+        </>
+      }
+    >
+      <strong>Can't reach {serverName}.</strong> Remove it here anyway? It stays listed on {serverName} until it reconnects.
+    </Notice>
   );
 }

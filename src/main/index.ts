@@ -11,10 +11,10 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  nativeTheme,
   net,
   Notification,
   safeStorage,
-  screen,
   session,
   shell,
   Tray,
@@ -57,11 +57,11 @@ const RENDERER_DIR = path.join(APP_ROOT, 'dist', 'renderer');
 const PRELOAD = path.join(APP_ROOT, 'dist', 'preload', 'index.js');
 const DEV = !app.isPackaged;
 
-// Windows are as tall as their content (the page reports it, see fitContent),
-// within these bounds and the screen. The width stays fixed.
+// Every window has one fixed size; only the paired apps list scrolls.
 const WINDOW_WIDTH = 460;
-const MIN_HEIGHT = 200;
-const SCREEN_MARGIN = 48;
+const WINDOW_HEIGHT = 608;
+// The page's background, so a window never flashes white before it paints.
+const WINDOW_BACKGROUND = '#111113';
 
 // A chosen .p12 waits in memory for its password this long (pkcs12-key-storage-plan.md §6.3).
 const CERTIFICATE_FILE_TTL_MS = 5 * 60_000;
@@ -141,6 +141,8 @@ function main(): void {
   });
 
   app.whenReady().then(async () => {
+    // Dark by default, whatever the system appearance.
+    nativeTheme.themeSource = 'dark';
     handleAppScheme(RENDERER_DIR);
     session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     session.defaultSession.setPermissionCheckHandler(() => false);
@@ -220,8 +222,9 @@ function main(): void {
     }
     mainWindow = new BrowserWindow({
       width: WINDOW_WIDTH,
-      height: 560,
+      height: WINDOW_HEIGHT,
       useContentSize: true,
+      backgroundColor: WINDOW_BACKGROUND,
       resizable: false,
       maximizable: false,
       fullscreenable: false,
@@ -231,7 +234,7 @@ function main(): void {
     });
     mainWindow.removeMenu();
     void mainWindow.loadURL(appUrl('/status'));
-    showWhenFitted(mainWindow, (win) => win.show());
+    mainWindow.once('ready-to-show', () => mainWindow?.show());
     mainWindow.on('closed', () => {
       mainWindow = null;
       pairingAbort?.abort();
@@ -254,8 +257,9 @@ function main(): void {
     return new Promise((resolve) => {
       const window = new BrowserWindow({
         width: WINDOW_WIDTH,
-        height: 420,
+        height: WINDOW_HEIGHT,
         useContentSize: true,
+        backgroundColor: WINDOW_BACKGROUND,
         resizable: false,
         minimizable: false,
         maximizable: false,
@@ -279,9 +283,9 @@ function main(): void {
         if (activeConfirm === pending) activeConfirm = null;
       });
       void window.loadURL(appUrl(`/confirm/${request.job.uuid}`));
-      showWhenFitted(window, (win) => {
-        win.show();
-        win.focus();
+      window.once('ready-to-show', () => {
+        window.show();
+        window.focus();
         app.focus();
       });
     });
@@ -327,40 +331,6 @@ function main(): void {
     }
     const pending = confirms.get(jobId);
     if (pending && !pending.window.isDestroyed()) setTimeout(() => pending.window.isDestroyed() || pending.window.close(), 2500);
-  }
-
-  // ── Content-sized windows ──
-
-  const awaitingFit = new Map<number, () => void>();
-
-  /** Shows a window once it has its content's height, so it doesn't visibly jump; or soon after load regardless. */
-  function showWhenFitted(win: BrowserWindow, show: (win: BrowserWindow) => void): void {
-    let shown = false;
-    const reveal = () => {
-      if (shown || win.isDestroyed()) return;
-      shown = true;
-      awaitingFit.delete(win.id);
-      show(win);
-    };
-    awaitingFit.set(win.id, reveal);
-    win.once('ready-to-show', () => setTimeout(reveal, 400));
-    win.on('closed', () => awaitingFit.delete(win.id));
-  }
-
-  function fitContent(win: BrowserWindow, height: number): void {
-    const { workArea } = screen.getDisplayMatching(win.getBounds());
-    const target = Math.round(Math.min(Math.max(height, MIN_HEIGHT), workArea.height - SCREEN_MARGIN));
-    const [width, current] = win.getContentSize();
-    const firstFit = awaitingFit.get(win.id);
-    if (Math.abs(current - target) >= 2) {
-      // Animated on macOS once visible; instant before the first show.
-      win.setContentSize(width, target, !firstFit);
-      // Growing must not push the bottom off the screen.
-      const bounds = win.getBounds();
-      const overflow = bounds.y + bounds.height - (workArea.y + workArea.height);
-      if (overflow > 0) win.setPosition(bounds.x, Math.max(workArea.y, bounds.y - overflow));
-    }
-    firstFit?.();
   }
 
   function notify(title: string, body: string): void {
@@ -704,12 +674,6 @@ function main(): void {
       } catch (err) {
         return certificateFailure(err);
       }
-    });
-    // Needs the sending window, so not through handle().
-    ipcMain.handle(IPC.fitContent, (event, height: unknown) => {
-      if (!trusted(event)) throw new Error('untrusted sender');
-      const win = BrowserWindow.fromWebContents(event.sender);
-      if (win && typeof height === 'number' && Number.isFinite(height) && height > 0) fitContent(win, height);
     });
   }
 }

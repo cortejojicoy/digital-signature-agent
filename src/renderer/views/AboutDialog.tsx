@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
 import type { StatusView, UpdateView } from '../../shared/ipc';
-import { Icon, IconButton } from '../icons';
+import { Icon } from '../icons';
+import { Button, IconButton } from '../ui';
 
 interface Props {
   version: string;
@@ -12,7 +13,7 @@ interface Props {
   onClose: () => void;
 }
 
-// Opened from the version line: what the agent does on this computer, and
+// Opened from the version: what the agent does on this computer, and
 // whether it's up to date. Plain words, no changelog.
 export function AboutDialog({ version, platform, capabilities, update, onClose }: Props) {
   const dialog = useRef<HTMLElement>(null);
@@ -33,20 +34,26 @@ export function AboutDialog({ version, platform, capabilities, update, onClose }
   // On <body>, outside the version line's aria-live region.
   return createPortal(
     <div className="dialog-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <section ref={dialog} className="dialog" role="dialog" aria-modal="true" aria-labelledby="about-title" data-fit-overlay>
-        <header className="dialog-header">
-          <h2 id="about-title">Kukux Sign Agent</h2>
-          <IconButton icon="x" label="Close" size="small" onClick={onClose} />
+      <section ref={dialog} className="dialog" role="dialog" aria-modal="true" aria-labelledby="about-title">
+        <header className="row">
+          <div className="app-tile">
+            <Icon name="shield" size={22} />
+          </div>
+          <div className="grow dialog-header">
+            <h2 id="about-title">Kukux Sign Agent</h2>
+            <div className="sub">Version {version}</div>
+          </div>
+          <IconButton icon="x" label="Close" variant="ghost" onClick={onClose} />
         </header>
 
-        <UpdateLine version={version} update={update} />
+        <UpdateLine update={update} />
 
         <div>
           <h3 className="dialog-section">What it does</h3>
           <ul className="feature-list">
             {features(platform, capabilities).map((line) => (
               <li key={line}>
-                <Icon name="check" size={15} />
+                <Icon name="check" size={16} stroke={2} />
                 <span>{line}</span>
               </li>
             ))}
@@ -54,8 +61,8 @@ export function AboutDialog({ version, platform, capabilities, update, onClose }
         </div>
 
         <footer className="dialog-footer">
-          <button type="button" className="link-button" onClick={() => void window.agent.openReleases()}>
-            All releases <Icon name="external" size={13} />
+          <button type="button" className="link-btn link-accent" onClick={() => void window.agent.openReleases()}>
+            All releases <Icon name="external" size={14} />
           </button>
         </footer>
       </section>
@@ -66,63 +73,74 @@ export function AboutDialog({ version, platform, capabilities, update, onClose }
 
 function features(platform: StatusView['platform'], caps: StatusView['capabilities']): string[] {
   const mac = platform === 'macos';
-  const chip = mac ? "this Mac's Secure Enclave" : "this PC's TPM";
   return [
-    caps.hardware
-      ? `Keeps your signing key in ${chip}, so it can't be copied off.`
-      : 'Keeps your signing key on this computer (no security chip found).',
-    caps.userPresence
-      ? `Asks for ${mac ? 'Touch ID or your password' : 'Windows Hello'} every time you sign.`
-      : 'Asks you to approve every signing.',
-    'Shows the document and who’s signing before you approve.',
-    'Works with several apps: one signature per app on this computer.',
-    'Lets each app show which computer you signed on.',
-    'Updates itself.',
+    caps.hardware ? `Key stays in the ${mac ? 'Secure Enclave' : 'TPM'}` : 'Key stays on this computer',
+    caps.userPresence ? `${mac ? 'Touch ID' : 'Windows Hello'} for every signature` : 'You approve every signature',
+    'Shows document and signer first',
+    'One signature per app',
+    'Apps see which computer signed',
+    'Updates itself',
   ];
 }
 
-function UpdateLine({ version, update }: { version: string; update: UpdateView }) {
+function UpdateLine({ update }: { update: UpdateView }) {
   const install = () => void window.agent.installUpdate();
   switch (update.state) {
     case 'available':
       return (
-        <div className="update-line">
-          <span>
-            Version {version} · <strong>{update.release.version}</strong> is out
+        <div className="update-line update-line-accent">
+          <Icon name="download" />
+          <span className="grow">
+            <strong>{update.release.version}</strong> is available
           </span>
-          <button type="button" className="button button-primary button-small" onClick={install}>
+          <Button size="sm" variant="primary" onClick={install}>
             {update.install === 'download' ? 'Update' : 'Download page'}
-          </button>
+          </Button>
         </div>
       );
     case 'downloading':
       return (
-        <p className="update-line muted">
-          Version {version} · Downloading {update.release.version}… {update.percent}%
-        </p>
+        <div className="update-line">
+          <Icon name="download" />
+          <span className="grow">
+            Downloading {update.release.version}… {update.percent}%
+          </span>
+        </div>
       );
     case 'ready':
       return (
-        <div className="update-line">
-          <span>
-            Version {version} · <strong>{update.release.version}</strong> is ready
+        <div className="update-line update-line-accent">
+          <Icon name="refresh" />
+          <span className="grow">
+            <strong>{update.release.version}</strong> is ready
           </span>
-          <button type="button" className="button button-primary button-small" onClick={install}>
-            Restart to update
-          </button>
+          <Button size="sm" variant="primary" onClick={install}>
+            Restart
+          </Button>
         </div>
       );
     case 'checking':
-      return <p className="update-line muted">Version {version} · Checking for updates…</p>;
+      return (
+        <div className="update-line">
+          <Icon name="refresh" />
+          <span className="grow">Checking for updates…</span>
+        </div>
+      );
     case 'up_to_date':
-      return <p className="update-line muted">Version {version} · Up to date</p>;
+      return (
+        <div className="update-line">
+          <Icon name="checkCircle" />
+          <span className="grow">Up to date</span>
+        </div>
+      );
     case 'error':
       return (
-        <p className="update-line muted" title={update.message}>
-          Version {version} · Couldn’t check for updates
-        </p>
+        <div className="update-line" title={update.message}>
+          <Icon name="warning" />
+          <span className="grow">Couldn’t check for updates</span>
+        </div>
       );
     default:
-      return <p className="update-line muted">Version {version}</p>;
+      return null;
   }
 }
