@@ -36,7 +36,6 @@ const bridge: AgentBridge = {
   checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
   installUpdate: () => ipcRenderer.invoke(IPC.installUpdate),
   openReleases: () => ipcRenderer.invoke(IPC.openReleases),
-  fitContent: (height) => ipcRenderer.invoke(IPC.fitContent, Number(height)),
   setKeyStorage: (storage) => ipcRenderer.invoke(IPC.setKeyStorage, storage === 'pkcs12' ? 'pkcs12' : 'platform'),
   chooseCertificateFile: () => ipcRenderer.invoke(IPC.chooseCertificateFile),
   inspectCertificate: (input) =>
