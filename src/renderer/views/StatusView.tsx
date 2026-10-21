@@ -13,9 +13,10 @@ interface Props {
   /** Change next to the key storage (pkcs12-key-storage-plan.md §7.3). */
   onChangeStorage: () => void;
   onImport: () => void;
+  onVerify: () => void;
 }
 
-export function StatusView({ onPair, onChangeStorage, onImport }: Props) {
+export function StatusView({ onPair, onChangeStorage, onImport, onVerify }: Props) {
   const [status, setStatus] = useState<Status | null>(null);
 
   const refresh = useCallback(() => {
@@ -38,6 +39,7 @@ export function StatusView({ onPair, onChangeStorage, onImport }: Props) {
       <Header status={status} />
       <ComputerCard status={status} onChange={onChangeStorage} onImport={onImport} onChanged={refresh} />
       <AppsCard status={status} onPair={onPair} onChanged={refresh} />
+      <VerifyCard onVerify={onVerify} />
       <DeveloperCard status={status} onChanged={refresh} />
     </main>
   );
@@ -397,6 +399,27 @@ function AppItem({
         {busy ? 'Unpairing…' : 'Unpair'}
       </Button>
     </li>
+  );
+}
+
+// ── Verify a PDF ──
+
+function VerifyCard({ onVerify }: { onVerify: () => void }) {
+  return (
+    <section className="card compact-card">
+      <div className="row">
+        <span className="tile tile-xs tile-neutral">
+          <Icon name="document" />
+        </span>
+        <span className="grow">
+          <span className="toggle-title">Verify a PDF</span>
+          <span className="sub">Check a signed file against its record</span>
+        </span>
+        <Button size="sm" iconEnd="forward" onClick={onVerify}>
+          Verify
+        </Button>
+      </div>
+    </section>
   );
 }
 
