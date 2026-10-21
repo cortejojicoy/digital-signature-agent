@@ -12,8 +12,8 @@ import * as pkijs from 'pkijs';
 
 import { combineVerdict, type Inspection, type LookupRecord, type Verdict } from '../../shared/verdict';
 import type { FetchLike } from '../api';
-import { lookupRecord, TrustAnchors, type TrustAnchorStore } from './lookup';
-import { findLastSignature, inspectPdf, signedBytes, verifyCms } from './pdfSignature';
+import { lookupRecordWithReason, TrustAnchors, type LookupFailure, type TrustAnchorStore } from './lookup';
+import { findSignatures, inspectPdf, signedBytes, verifyCms } from './pdfSignature';
 
 export const MAX_PDF_BYTES = 50 * 1024 * 1024;
 const PDF_HEADER = Buffer.from('%PDF-', 'latin1');
@@ -97,6 +97,8 @@ export interface VerifyReport {
   origin: string | null;
   inspection: Inspection;
   record: LookupRecord | null;
+  /** Why record is null when apps were asked: "unsupported" means no app has PDF verification yet. */
+  lookupFailure: LookupFailure | null;
 }
 
 export interface VerifierOptions {
@@ -140,10 +142,11 @@ export class PdfVerifier {
         origin: null,
         inspection: local,
         record: null,
+        lookupFailure: null,
       };
     }
 
-    const answer = await lookupRecord(
+    const { answer, failure } = await lookupRecordWithReason(
       targets.map((t) => t.origin),
       { sha256: local.sha256, signedRevisionSha256: local.signedRevisionSha256 },
       this.options.fetch,
@@ -156,42 +159,58 @@ export class PdfVerifier {
     // The app that answered first, then the others: the first CA it chains to wins.
     const order = answer ? [answer.origin, ...targets.map((t) => t.origin).filter((o) => o !== answer.origin)] : targets.map((t) => t.origin);
     const trust = await this.checkTrust(bytes, local, order);
-    const inspection: Inspection =
-      local.signature && trust ? { ...local, signature: { ...local.signature, trusted: trust.trusted, error: trust.error } } : local;
+    const signatures = local.signatures.map((signature, i) =>
+      trust[i] ? { ...signature, trusted: trust[i].trusted, error: trust[i].error } : signature,
+    );
+    const inspection: Inspection = { ...local, signatures, signature: signatures.length > 0 ? signatures[signatures.length - 1] : null };
+    const lastTrust = trust.length > 0 ? trust[trust.length - 1] : null;
 
     return {
       verdict: combineVerdict(inspection, answer?.record ?? null),
       paired: true,
       issuer,
-      trustIssuer: trust?.origin ? nameOf(trust.origin) : issuer,
+      trustIssuer: lastTrust?.origin ? nameOf(lastTrust.origin) : issuer,
       origin: answer?.origin ?? null,
       inspection,
       record: answer?.record ?? null,
+      lookupFailure: answer ? null : failure,
     };
   }
 
   /**
-   * The embedded signature's chain against each pinned CA in turn. null when
-   * there's nothing to check (no intact signature) or no CA could be had.
+   * Each embedded signature's chain against each pinned CA in turn, in file
+   * order. An entry is null when there's nothing to check (that signature
+   * isn't intact) or no CA could be had.
    */
   private async checkTrust(
     bytes: Uint8Array,
     local: Inspection,
     origins: string[],
-  ): Promise<{ trusted: boolean; error: string | null; origin: string } | null> {
-    if (!local.signature?.intact) return null;
-    const found = findLastSignature(bytes);
-    if (!found) return null;
-    const data = signedBytes(bytes, found.byteRange);
-    let untrusted: { trusted: boolean; error: string | null; origin: string } | null = null;
-    for (const origin of origins) {
-      const certificates = await this.anchors.certificates(origin);
-      if (certificates.length === 0) continue;
-      const check = await verifyCms(found.contents, data, certificates);
-      if (check.trusted === true) return { trusted: true, error: null, origin };
-      untrusted ??= { trusted: false, error: check.error, origin };
+  ): Promise<Array<{ trusted: boolean; error: string | null; origin: string } | null>> {
+    const found = findSignatures(bytes);
+    const results: Array<{ trusted: boolean; error: string | null; origin: string } | null> = [];
+
+    for (const [i, entry] of found.entries()) {
+      if (!local.signatures[i]?.intact) {
+        results.push(null);
+        continue;
+      }
+      const data = signedBytes(bytes, entry.byteRange);
+      let result: { trusted: boolean; error: string | null; origin: string } | null = null;
+      for (const origin of origins) {
+        const certificates = await this.anchors.certificates(origin);
+        if (certificates.length === 0) continue;
+        const check = await verifyCms(entry.contents, data, certificates);
+        if (check.trusted === true) {
+          result = { trusted: true, error: null, origin };
+          break;
+        }
+        result ??= { trusted: false, error: check.error, origin };
+      }
+      results.push(result);
     }
-    return untrusted;
+
+    return results;
   }
 }
 
