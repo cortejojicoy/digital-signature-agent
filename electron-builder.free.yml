@@ -6,6 +6,9 @@
 # Enclave, via CryptoKit blobs rather than the keychain (SecureEnclaveBlob.swift).
 # Windows: unsigned. Windows Hello and TPM keys don't depend on code signing.
 extends: ./electron-builder.yml
+# PDF "Open With" (mac.fileAssociations, build/installer.nsh) comes from the
+# base file. Don't repeat it here: extends concatenates arrays, so the entry
+# would be registered twice.
 
 mac:
   identity: "-"

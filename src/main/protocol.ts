@@ -180,3 +180,24 @@ export function isLocalNetworkHost(hostname: string): boolean {
 export function linkFromArgv(argv: string[]): string | null {
   return argv.find((arg) => arg.startsWith(`${SCHEME}://`)) ?? null;
 }
+
+/**
+ * Finds a PDF the OS asked us to open (Windows "Open with": first launch and
+ * second-instance argv). argv[0] is the executable; switches, links and
+ * anything not ending in .pdf are skipped. The main process still checks the
+ * file itself before reading it: this only picks the argument.
+ */
+export function pdfFromArgv(argv: string[]): string | null {
+  return (
+    argv
+      .slice(1)
+      .find(
+        (arg) =>
+          typeof arg === 'string' &&
+          !arg.startsWith('-') &&
+          !/^[a-z][a-z0-9+.-]*:\/\//i.test(arg) &&
+          /\.pdf$/i.test(arg) &&
+          arg.length <= 4096,
+      ) ?? null
+  );
+}
