@@ -108,10 +108,17 @@ function Report({ report, onAnother, onBack }: { report: VerifyReportView; onAno
   const document = record?.document ?? null;
   const context = { issuer: report.issuer, document };
   const copy = COPY[verdict];
-  // Nothing paired: "the server didn't answer" would be wrong, there was no one to ask.
+  // "The server didn't answer, try again" is wrong in two cases: nothing is
+  // paired, so there was no one to ask; or the app answered that it has no
+  // PDF verification yet (an older release), so trying again won't help.
   const unpaired = !report.paired && verdict === 'lookup_failed';
-  const title = unpaired ? 'Record not checked' : copyTitle(verdict, context);
-  const lede = unpaired ? 'No app is paired here, so this only shows what the file says about itself.' : copy.lede(context);
+  const unsupported = report.paired && verdict === 'lookup_failed' && report.lookupFailure === 'unsupported';
+  const title = unpaired ? 'Record not checked' : unsupported ? "This app can't check records yet" : copyTitle(verdict, context);
+  const lede = unpaired
+    ? 'No app is paired here, so this only shows what the file says about itself.'
+    : unsupported
+      ? `${report.issuer} doesn't have PDF verification yet, so this only shows what the file says about itself. It will once ${report.issuer} is updated.`
+      : copy.lede(context);
 
   const open = async () => {
     setOpenError(null);
@@ -164,7 +171,7 @@ function Report({ report, onAnother, onBack }: { report: VerifyReportView; onAno
           This file
         </h2>
         <dl className="facts facts-small">
-          {describeEmbedded(inspection, report.trustIssuer).map(([label, value]) => (
+          {describeEmbedded(inspection, report.trustIssuer, { recordChecked: record !== null }).map(([label, value]) => (
             <FactRow key={label} label={label} value={value} />
           ))}
         </dl>
