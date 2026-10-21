@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isLocalNetworkHost, linkFromArgv, normalizeOrigin, normalizeUserCode, parseLink } from '../src/main/protocol';
+import { isLocalNetworkHost, linkFromArgv, normalizeOrigin, normalizeUserCode, parseLink, pdfFromArgv } from '../src/main/protocol';
 
 const UUID = '0b7a4f5e-1c2d-4e3f-8a9b-0c1d2e3f4a5b';
 const TOKEN = 'fIb2Bzv4gKtSWoDpD9canXJryrxB47J3uR9y4Xkqz8w';
@@ -168,5 +168,32 @@ describe('linkFromArgv', () => {
   it('finds the link Windows passes to a second instance', () => {
     expect(linkFromArgv(['C:\\agent.exe', '--flag', 'kukuxsign://job/x'])).toBe('kukuxsign://job/x');
     expect(linkFromArgv(['C:\\agent.exe'])).toBeNull();
+  });
+});
+
+describe('pdfFromArgv', () => {
+  it('finds the PDF Windows passes on first launch and to a second instance', () => {
+    expect(pdfFromArgv(['C:\\Program Files\\Agent\\agent.exe', 'C:\\Users\\ana\\Downloads\\Report (signed).PDF'])).toBe(
+      'C:\\Users\\ana\\Downloads\\Report (signed).PDF',
+    );
+    expect(pdfFromArgv(['C:\\agent.exe', '--allow-file-access-from-files', '--original-process-start-time=1', 'D:\\a.pdf'])).toBe('D:\\a.pdf');
+    // npm run dev: electron . <file>
+    expect(pdfFromArgv(['/path/electron', '.', '/Users/ana/a.pdf'])).toBe('/Users/ana/a.pdf');
+  });
+
+  it('ignores the executable, switches, links and other files', () => {
+    expect(pdfFromArgv(['C:\\agent.pdf'])).toBeNull();
+    expect(pdfFromArgv(['C:\\agent.exe', '--file=x.pdf'])).toBeNull();
+    expect(pdfFromArgv(['C:\\agent.exe', 'kukuxsign://job/x.pdf'])).toBeNull();
+    expect(pdfFromArgv(['C:\\agent.exe', 'https://evil.example/x.pdf'])).toBeNull();
+    expect(pdfFromArgv(['C:\\agent.exe', 'C:\\notes.txt', 'C:\\a.pdf.exe'])).toBeNull();
+    expect(pdfFromArgv(['C:\\agent.exe'])).toBeNull();
+    expect(pdfFromArgv([])).toBeNull();
+  });
+
+  it('does not mistake a link for a file, and the link still wins in linkFromArgv', () => {
+    const argv = ['C:\\agent.exe', 'kukuxsign://job/x', 'C:\\a.pdf'];
+    expect(linkFromArgv(argv)).toBe('kukuxsign://job/x');
+    expect(pdfFromArgv(argv)).toBe('C:\\a.pdf');
   });
 });
