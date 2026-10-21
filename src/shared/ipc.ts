@@ -260,6 +260,11 @@ export interface VerifyReportView {
   trustIssuer: string;
   inspection: Inspection;
   record: LookupRecord | null;
+  /**
+   * Why record is null though apps were asked. "unsupported": none of them
+   * has PDF verification yet (an older release), so retrying won't help.
+   */
+  lookupFailure: 'unsupported' | 'unavailable' | null;
 }
 
 export type VerifyFileErrorCode = 'not_found' | 'not_a_file' | 'empty' | 'too_large' | 'not_pdf' | 'unreadable';
