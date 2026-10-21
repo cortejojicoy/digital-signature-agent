@@ -60,6 +60,14 @@ mac:
     NSFaceIDUsageDescription: Approve signatures with Touch ID.
     # Developer mode: reaching apps on the local network (macOS 15+ asks first).
     NSLocalNetworkUsageDescription: Connect to signing apps on your local network (Developer mode).
+  # Verify a PDF: listed under Open With, never offered as the default viewer
+  # (rank Alternate). Here rather than top level, because electron-builder's
+  # NSIS association would claim .pdf on Windows; see build/installer.nsh.
+  fileAssociations:
+    - ext: pdf
+      name: PDF document
+      role: Viewer
+      rank: Alternate
 
 win:
   target:
@@ -74,6 +82,8 @@ nsis:
   oneClick: true
   perMachine: false # per-user install, no admin
   allowElevation: false
+  # "Open with → Kukux Sign Agent" for PDFs, without becoming their default app.
+  include: build/installer.nsh
 
 # GitHub Releases serve the installers, latest*.yml (auto-update feed and
 # install-script metadata) and install.sh / install.ps1. To self-host, build
