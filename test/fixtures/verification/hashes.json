@@ -1,11 +1,16 @@
 {
     "sha256": {
         "base.pdf": "326956d13f0a5fc528892952879f394136539c9d351584167362aeae9244c883",
-        "v1.pdf": "d9c1143a85abbdc07a9e28a0d01a3aae957f5b1cfa835af8f8d49353ef4e3dc7",
-        "v2.pdf": "43e92e2d1ad8e84f6aa0ea4ceeb8af1087ceb2e1017960b18569c0dcc48da7cb"
+        "v1.pdf": "97fd0056cb691111ee11d7bc7b52f48ccf9f010007f003ea9412baedbbf56360",
+        "v2.pdf": "b0a77e575f7686220148439789e984fef3ce41c21aeb3960923a3a5c030043c4",
+        "two-signatures.pdf": "36336436a9cfe64687e044da386dbefb0c5f76006d934c0a68b263caf0de359d"
     },
     "signers": {
         "v1.pdf": "Ana Prepared",
-        "v2.pdf": "Ben Accepted"
+        "v2.pdf": "Ben Accepted",
+        "two-signatures.pdf": [
+            "Ana Prepared",
+            "Ben Accepted"
+        ]
     }
 }

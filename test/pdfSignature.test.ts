@@ -12,13 +12,13 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { findLastSignature, inspectPdf, parsePemCertificates, sha256Hex } from '../src/main/verify/pdfSignature';
+import { findLastSignature, findSignatures, inspectPdf, parsePemCertificates, sha256Hex } from '../src/main/verify/pdfSignature';
 
 const dir = path.join(__dirname, 'fixtures', 'verification');
 const read = (name: string) => new Uint8Array(readFileSync(path.join(dir, name)));
 const fixtures = JSON.parse(readFileSync(path.join(dir, 'hashes.json'), 'utf8')) as {
   sha256: Record<string, string>;
-  signers: Record<string, string>;
+  signers: Record<string, string | string[]>;
 };
 
 const trusted = parsePemCertificates(readFileSync(path.join(dir, 'ca.pem'), 'utf8'));
@@ -102,6 +102,32 @@ describe('pdfSignature', () => {
     expect(result.signedRevisionSha256, 'but its signed prefix does').toBe(fixtures.sha256['v2.pdf']);
     expect(result.signature?.coversWholeFile).toBe(false);
     expect(result.signature?.intact).toBe(true);
+  });
+
+  it("a progressively signed file carries one digital signature, the last signer's", async () => {
+    const result = await inspectPdf(read('v2.pdf'), trusted);
+
+    expect(result.signatures).toHaveLength(1);
+    expect(result.signatures[0].signer).toBe(fixtures.signers['v2.pdf']);
+  });
+
+  it('checks every signature in a file that kept them all', async () => {
+    const result = await inspectPdf(read('two-signatures.pdf'), trusted);
+
+    expect(result.signatures.map((s) => s.signer)).toEqual(fixtures.signers['two-signatures.pdf']);
+    expect(result.signatures.every((s) => s.intact && s.trusted === true)).toBe(true);
+    // Only the later one covers the whole file; the verdict turns on it.
+    expect(result.signatures.map((s) => s.coversWholeFile)).toEqual([false, true]);
+    expect(result.signature?.signer).toBe('Ben Accepted');
+    expect(result.signedRevisionSha256).toBe(result.sha256);
+  });
+
+  it('lists signatures in the order they were added', () => {
+    const found = findSignatures(read('two-signatures.pdf'));
+
+    expect(found).toHaveLength(2);
+    expect(found[0].revisionEnd).toBeLessThan(found[1].revisionEnd);
+    expect(findLastSignature(read('two-signatures.pdf'))?.revisionEnd).toBe(found[1].revisionEnd);
   });
 
   it('ignores a /ByteRange that is only text and points at no signature', () => {

@@ -40,7 +40,10 @@ export interface Inspection {
   sha256: string;
   /** The bytes up to the end of the last signature; null with no signature. */
   signedRevisionSha256: string | null;
+  /** The last signature: the one the verdict turns on. */
   signature: EmbeddedSignature | null;
+  /** Every signature in the file, oldest first (one, for a progressively signed PDF). */
+  signatures: EmbeddedSignature[];
 }
 
 export type SlotState = 'signed' | 'signed_later' | 'declined' | 'pending';
@@ -204,37 +207,64 @@ export function describeSlot(slot: Pick<LookupSlot, 'state'> & Partial<Pick<Look
   }
 }
 
-/** What the file's own signature says, as label/value rows. */
+/**
+ * What the file's own digital signatures say, as label/value rows.
+ *
+ * One row for a single signature, numbered rows for several. Unless the
+ * record answered (and so lists every slot itself), it also says how many
+ * digital signatures the file carries: with progressive signing that is one,
+ * the last signer's, and the signatures stamped before it are images the
+ * file alone can't vouch for.
+ */
 export function describeEmbedded(
-  inspection: { signature: Pick<EmbeddedSignature, 'intact' | 'trusted' | 'signer' | 'coversWholeFile'> | null },
+  inspection: {
+    signature: Pick<EmbeddedSignature, 'intact' | 'trusted' | 'signer' | 'coversWholeFile'> | null;
+    signatures?: Array<Pick<EmbeddedSignature, 'intact' | 'trusted' | 'signer' | 'coversWholeFile'>>;
+  },
   issuer: string,
+  { recordChecked = false }: { recordChecked?: boolean } = {},
 ): Array<[string, string]> {
-  const signature = inspection.signature;
+  const signatures = inspection.signatures ?? (inspection.signature ? [inspection.signature] : []);
+  const last = signatures.length > 0 ? signatures[signatures.length - 1] : null;
+  const made = (s: Pick<EmbeddedSignature, 'intact' | 'signer'>) =>
+    s.intact ? `Intact${s.signer ? `, made by ${s.signer}` : ''}` : "Broken: doesn't match the file";
 
-  if (signature === null) {
-    return [['Digital signature', 'None in this file']];
+  if (last === null) {
+    return recordChecked
+      ? [['Digital signature', 'None in this file']]
+      : [
+          ['Digital signature', 'None in this file'],
+          ['Signatures on the page', 'Images only. Only the record can confirm who signed.'],
+        ];
   }
 
-  const rows: Array<[string, string]> = [
-    [
-      'Digital signature',
-      signature.intact ? `Intact${signature.signer ? `, made by ${signature.signer}` : ''}` : "Broken: doesn't match the file",
-    ],
-  ];
+  const rows: Array<[string, string]> =
+    signatures.length === 1
+      ? [['Digital signature', made(last)]]
+      : signatures.map((s, i): [string, string] => [`Digital signature ${i + 1} of ${signatures.length}`, made(s)]);
 
-  if (signature.intact) {
+  if (last.intact) {
     rows.push([
       'Certificate',
-      signature.trusted === true
+      last.trusted === true
         ? `Issued under ${issuer}'s certificate authority`
-        : signature.trusted === false
+        : last.trusted === false
           ? "Issued by a certificate authority this system doesn't trust"
           : 'Not checked',
     ]);
   }
 
-  if (!signature.coversWholeFile) {
+  if (!last.coversWholeFile) {
     rows.push(['Saved since signing', 'Yes, bytes were added after the last signature']);
+  }
+
+  if (!recordChecked) {
+    rows.push([
+      'Other signatures',
+      signatures.length === 1
+        ? "This file carries one digital signature, the last signer's. Any other signature on the page is an image that only the record can confirm."
+        : `This file carries ${signatures.length} digital signatures. Any other signature on the page is an image that only the record can confirm.`,
+    ]);
   }
 
   return rows;

@@ -38,6 +38,18 @@ export interface LookupAnswer {
 }
 
 /**
+ * Why nobody answered:
+ *   unsupported  every app said it has no such endpoint (404 / 405 / 501): it
+ *                runs a release without PDF verification. Retrying won't help.
+ *   unavailable  anything else: offline, a timeout, a server error, a bad answer.
+ */
+export type LookupFailure = 'unsupported' | 'unavailable';
+
+type OneResult = { record: LookupRecord } | { failure: LookupFailure };
+
+const UNSUPPORTED_STATUSES = new Set([404, 405, 501]);
+
+/**
  * Asks every paired origin at once. The first answer, in pairing order, that
  * recognises the file wins. If they all say not_issued, the first of those is
  * the answer. null when no one answered (offline, 404 with verification
@@ -49,16 +61,36 @@ export async function lookupRecord(
   fetch: FetchLike,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<LookupAnswer | null> {
-  const answers = await Promise.all(origins.map((origin) => askOne(origin, fingerprints, fetch, timeoutMs)));
-  const answered = answers.flatMap((record, i) => (record ? [{ origin: origins[i], record }] : []));
-  return answered.find((a) => a.record.verdict !== 'not_issued') ?? answered[0] ?? null;
+  return (await lookupRecordWithReason(origins, fingerprints, fetch, timeoutMs)).answer;
+}
+
+/** lookupRecord(), plus why it came back empty, so the view can say the right thing. */
+export async function lookupRecordWithReason(
+  origins: string[],
+  fingerprints: Fingerprints,
+  fetch: FetchLike,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<{ answer: LookupAnswer | null; failure: LookupFailure | null }> {
+  const results = await Promise.all(origins.map((origin) => askOneDetailed(origin, fingerprints, fetch, timeoutMs)));
+  const answered = results.flatMap((result, i) => ('record' in result ? [{ origin: origins[i], record: result.record }] : []));
+  const answer = answered.find((a) => a.record.verdict !== 'not_issued') ?? answered[0] ?? null;
+
+  if (answer) return { answer, failure: null };
+
+  const unsupported = results.length > 0 && results.every((r) => 'failure' in r && r.failure === 'unsupported');
+  return { answer: null, failure: unsupported ? 'unsupported' : 'unavailable' };
 }
 
 /** One origin's answer, or null for anything but a well-formed 200. */
 export async function askOne(origin: string, fingerprints: Fingerprints, fetch: FetchLike, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<LookupRecord | null> {
+  const result = await askOneDetailed(origin, fingerprints, fetch, timeoutMs);
+  return 'record' in result ? result.record : null;
+}
+
+async function askOneDetailed(origin: string, fingerprints: Fingerprints, fetch: FetchLike, timeoutMs: number): Promise<OneResult> {
   const sha256 = fingerprints.sha256.toLowerCase();
   const revision = fingerprints.signedRevisionSha256?.toLowerCase() ?? null;
-  if (!HEX64.test(sha256) || (revision !== null && !HEX64.test(revision))) return null;
+  if (!HEX64.test(sha256) || (revision !== null && !HEX64.test(revision))) return { failure: 'unavailable' };
   try {
     const response = await fetch(`${origin}${LOOKUP_PATH}`, {
       method: 'POST',
@@ -69,11 +101,13 @@ export async function askOne(origin: string, fingerprints: Fingerprints, fetch: 
       redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (response.status !== 200) return null;
+    if (UNSUPPORTED_STATUSES.has(response.status)) return { failure: 'unsupported' };
+    if (response.status !== 200) return { failure: 'unavailable' };
     const text = await readCapped(response, MAX_LOOKUP_RESPONSE);
-    return text === null ? null : parseLookupResponse(JSON.parse(text));
+    const record = text === null ? null : parseLookupResponse(JSON.parse(text));
+    return record ? { record } : { failure: 'unavailable' };
   } catch {
-    return null;
+    return { failure: 'unavailable' };
   }
 }
 
