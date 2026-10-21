@@ -1,6 +1,6 @@
 // contextBridge API (desktop-agent-plan.md §7.1). The renderer is sandboxed
 // and gets only these calls.
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 
 import { IPC, type AgentBridge } from '../shared/ipc';
 
@@ -8,6 +8,15 @@ function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   const listener = (_event: IpcRendererEvent, payload: T) => cb(payload);
   ipcRenderer.on(channel, listener);
   return () => ipcRenderer.removeListener(channel, listener);
+}
+
+/** A dropped file's path; '' for anything that isn't a file on disk (the main process then refuses it). */
+function pathOf(file: File): string {
+  try {
+    return webUtils.getPathForFile(file);
+  } catch {
+    return '';
+  }
 }
 
 const bridge: AgentBridge = {
@@ -47,11 +56,17 @@ const bridge: AgentBridge = {
     ipcRenderer.invoke(IPC.switchKeyStorage, storage === 'pkcs12' ? 'pkcs12' : 'platform', {
       removeCertificate: opts?.removeCertificate === true,
     }),
+  chooseAndVerifyPdf: () => ipcRenderer.invoke(IPC.chooseAndVerifyPdf),
+  // The page hands over a File from a drop, never a path of its own choosing.
+  verifyDroppedFile: (file) => ipcRenderer.invoke(IPC.verifyPdf, pathOf(file)),
+  openVerifiedPdf: (token) => ipcRenderer.invoke(IPC.openVerifiedPdf, String(token)),
   onStatusChanged: (cb) => subscribe(IPC.statusChanged, cb),
   onPairingProgress: (cb) => subscribe(IPC.pairingProgress, cb),
   onPairPrefill: (cb) => subscribe(IPC.pairPrefill, cb),
   onJobState: (cb) => subscribe(IPC.jobState, cb),
   onUpdateChanged: (cb) => subscribe(IPC.updateChanged, cb),
+  onVerifyRequested: (cb) => subscribe(IPC.verifyRequested, cb),
+  onVerifyFinished: (cb) => subscribe(IPC.verifyFinished, cb),
 };
 
 contextBridge.exposeInMainWorld('agent', bridge);
