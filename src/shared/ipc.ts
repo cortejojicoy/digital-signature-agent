@@ -2,6 +2,7 @@
 // Deliberately narrow: there is no generic sign(bytes).
 import type { PendingRevokeSummary, UnpairResult } from '../main/agent';
 import type { DeviceType } from '../main/device-type';
+import type { Inspection, LookupRecord, Verdict } from './verdict';
 
 export type { DeviceType, PendingRevokeSummary, UnpairResult };
 
@@ -30,12 +31,18 @@ export const IPC = {
   // Certificate password and one storage at a time (certificate-password-pairing-plan.md §7.3)
   previewPairing: 'agent:preview-pairing',
   switchKeyStorage: 'agent:switch-key-storage',
+  // Verify a PDF: the main process reads and checks the file; the page gets the verdict
+  chooseAndVerifyPdf: 'agent:choose-and-verify-pdf',
+  verifyPdf: 'agent:verify-pdf',
+  openVerifiedPdf: 'agent:open-verified-pdf',
   // main → renderer events
   statusChanged: 'agent:status-changed',
   pairingProgress: 'agent:pairing-progress',
   pairPrefill: 'agent:pair-prefill',
   jobState: 'agent:job-state',
   updateChanged: 'agent:update-changed',
+  verifyRequested: 'agent:verify-requested',
+  verifyFinished: 'agent:verify-finished',
 } as const;
 
 export type ProtectionLevel = 'secure_enclave' | 'tpm' | 'software';
@@ -237,6 +244,39 @@ export type JobState =
   | { state: 'rejected'; reason: string }
   | { state: 'failed'; error: string };
 
+/** A checked PDF (main/verify/verifier.ts). Server text in it is shown as text only. */
+export interface VerifyReportView {
+  ok: true;
+  /** Opaque: openVerifiedPdf(token) opens this file. The page never sees its path. */
+  token: string;
+  fileName: string;
+  size: number;
+  verdict: Verdict;
+  /** false: no app is paired, so only the file's own signature was checked. */
+  paired: boolean;
+  /** For the wording: the record's issuer, else the paired app's name. */
+  issuer: string;
+  /** Whose CA the embedded signature was checked against. */
+  trustIssuer: string;
+  inspection: Inspection;
+  record: LookupRecord | null;
+}
+
+export type VerifyFileErrorCode = 'not_found' | 'not_a_file' | 'empty' | 'too_large' | 'not_pdf' | 'unreadable';
+
+export type VerifyResult = VerifyReportView | { ok: false; error: string; code: VerifyFileErrorCode; fileName?: string };
+
+/** A PDF opened with the agent from the OS: `verifyFinished` with the same id follows. */
+export interface VerifyRequestedEvent {
+  id: number;
+  fileName: string;
+}
+
+export interface VerifyFinishedEvent {
+  id: number;
+  result: VerifyResult;
+}
+
 /** What the preload exposes as window.agent. */
 export interface AgentBridge {
   getStatus(): Promise<StatusView>;
@@ -280,10 +320,18 @@ export interface AgentBridge {
   /** Imports it and selects certificate key storage. */
   importCertificate(input: { token: string; password: string }): Promise<CertificateImportResult>;
   removeCertificate(id: string): Promise<CertificateRemoveResult>;
+  /** Opens the system file picker for a PDF and checks it. null: cancelled. */
+  chooseAndVerifyPdf(): Promise<VerifyResult | null>;
+  /** Checks a PDF dropped on the window. Only its path reaches the main process, which reads and checks it. */
+  verifyDroppedFile(file: File): Promise<VerifyResult>;
+  /** Opens a checked file in the system's PDF viewer. */
+  openVerifiedPdf(token: string): Promise<{ ok: boolean; error?: string }>;
   onStatusChanged(cb: () => void): () => void;
   onPairingProgress(cb: (p: PairingProgressView) => void): () => void;
   /** `certificate`: the agent is in certificate mode, so pair with the password screen (§3.1). */
   onPairPrefill(cb: (p: { origin: string; code: string; certificate: boolean }) => void): () => void;
   onJobState(cb: (s: JobState & { id: string }) => void): () => void;
   onUpdateChanged(cb: (u: UpdateView) => void): () => void;
+  onVerifyRequested(cb: (e: VerifyRequestedEvent) => void): () => void;
+  onVerifyFinished(cb: (e: VerifyFinishedEvent) => void): () => void;
 }
