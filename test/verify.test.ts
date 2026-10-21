@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { FetchLike } from '../src/main/api';
 import { Store, type PairedServer } from '../src/main/store';
-import { askOne, lookupRecord, parseLookupResponse, TrustAnchors } from '../src/main/verify/lookup';
+import { askOne, lookupRecord, lookupRecordWithReason, parseLookupResponse, TrustAnchors } from '../src/main/verify/lookup';
 import { PdfVerifier, readPdfFile } from '../src/main/verify/verifier';
 import { fakeCipher } from './support/fake-cipher';
 
@@ -119,6 +119,24 @@ describe('lookup client', () => {
     expect(await lookupRecord([A, B], { sha256: SHA, signedRevisionSha256: null }, bad.fetch)).toBeNull();
   });
 
+  it('says why nobody answered: no PDF verification there yet (404/405) is not "try again"', async () => {
+    const fp = { sha256: SHA, signedRevisionSha256: null };
+
+    // The live hub before the release: POST /lookup hits only the GET /verify/{uuid} route.
+    const old = mockFetch({ [lookup(A)]: { status: 405 }, [lookup(B)]: { status: 404 } });
+    expect(await lookupRecordWithReason([A, B], fp, old.fetch)).toEqual({ answer: null, failure: 'unsupported' });
+
+    // One app merely offline might have answered: that is "unavailable".
+    const mixed = mockFetch({ [lookup(A)]: { status: 405 }, [lookup(B)]: 'offline' });
+    expect(await lookupRecordWithReason([A, B], fp, mixed.fetch)).toEqual({ answer: null, failure: 'unavailable' });
+
+    const down = mockFetch({ [lookup(A)]: { status: 503 }, [lookup(B)]: { text: '<html>' } });
+    expect((await lookupRecordWithReason([A, B], fp, down.fetch)).failure).toBe('unavailable');
+
+    const fine = mockFetch({ [lookup(A)]: { status: 405 }, [lookup(B)]: { body: answer('complete') } });
+    expect(await lookupRecordWithReason([A, B], fp, fine.fetch)).toMatchObject({ answer: { origin: B }, failure: null });
+  });
+
   it('never sends something that is not a fingerprint', async () => {
     const { fetch, calls } = mockFetch({ [lookup(A)]: { body: answer('complete') } });
     expect(await askOne(A, { sha256: 'nope', signedRevisionSha256: null }, fetch)).toBeNull();
@@ -226,12 +244,37 @@ describe('PdfVerifier', () => {
     expect(report.inspection.signature).toMatchObject({ intact: true, trusted: false, error: 'untrusted_chain' });
   });
 
+  it('reports an app without PDF verification as unsupported, not as offline', async () => {
+    const { fetch } = mockFetch({ [lookup(A)]: { status: 405 }, [lookup(B)]: { status: 405 } });
+    const report = await new PdfVerifier({ targets: () => targets, anchors: memoryAnchors(), fetch }).verify(read('v2.pdf'));
+
+    expect(report.verdict).toBe('lookup_failed');
+    expect(report.lookupFailure).toBe('unsupported');
+  });
+
+  it('checks every digital signature in a file that kept them all, each against the pinned CA', async () => {
+    const { fetch } = mockFetch({
+      [lookup(A)]: { body: answer('not_issued', 'App A') },
+      [lookup(B)]: { body: answer('not_issued', 'App B') },
+      [caUrl(A)]: { text: CA },
+    });
+    const report = await new PdfVerifier({ targets: () => [targets[0]], anchors: memoryAnchors(), fetch }).verify(read('two-signatures.pdf'));
+
+    expect(report.inspection.signatures.map((s) => [s.signer, s.intact, s.trusted])).toEqual([
+      ['Ana Prepared', true, true],
+      ['Ben Accepted', true, true],
+    ]);
+    expect(report.inspection.signature?.signer).toBe('Ben Accepted');
+    expect(report.lookupFailure).toBeNull();
+  });
+
   it('offline is lookup_failed, never not_issued, and trust is "not checked"', async () => {
     const { fetch } = mockFetch({ [lookup(A)]: 'offline', [lookup(B)]: 'offline', [caUrl(A)]: 'offline', [caUrl(B)]: 'offline' });
     const report = await new PdfVerifier({ targets: () => targets, anchors: memoryAnchors(), fetch }).verify(read('v2.pdf'));
 
     expect(report.verdict).toBe('lookup_failed');
     expect(report.record).toBeNull();
+    expect(report.lookupFailure).toBe('unavailable');
     expect(report.issuer).toBe('App A');
     expect(report.inspection.signature).toMatchObject({ intact: true, trusted: null });
   });
