@@ -86,9 +86,11 @@ src/main/                Electron main process
   pairing.ts, jobs.ts    §8.1 and §8.3 flows
   store.ts               servers.json + tokens (safeStorage, or SE-sealed on free macOS)
   build-info.ts          free vs signed build flags
+  verify/                Verify a PDF: pdfSignature (mirrors the package's verify JS), lookup + CA pins, verifier
   index.ts, updater.ts   lifecycle, tray, windows, hardening, IPC
 src/preload/             contextBridge API (no generic sign)
-src/renderer/            React UI: status, pairing, confirm
+src/shared/              IPC contract; verdict.ts (verdict wording, mirrors the package)
+src/renderer/            React UI: status, pairing, confirm, verify
 test/                    vitest: unit + end-to-end against test/support/mock-server.ts
 ```
 

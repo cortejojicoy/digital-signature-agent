@@ -23,7 +23,9 @@
     "dist:local": "NODE_ENV=production npm run build && npm run rebuild:native && electron-builder --config electron-builder.free.yml --publish never"
   },
   "dependencies": {
+    "asn1js": "3.0.10",
     "electron-updater": "^6.8.9",
+    "pkijs": "3.4.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -43,5 +45,8 @@
   },
   "engines": {
     "node": ">=22.18"
+  },
+  "overrides": {
+    "asn1js": "3.0.10"
   }
 }

@@ -8,6 +8,8 @@ When tagging a release, rename `Unreleased` to the version, e.g.
 
 ## Unreleased
 
+- Verify a PDF: open a signed PDF with Kukux Sign Agent (Open With), drop it on the window, or choose it. The agent checks the file's signature on this computer and asks your paired apps whether it's a copy they issued, and shows who has signed
+- Only the file's fingerprint goes to your paired apps; the file itself stays on this computer
 - With a software certificate, **Open in Kukux Sign Agent** pairs without an address or code: check the app and enter your certificate's password
 - Your certificate's password approves pairing and every signing, in place of Touch ID / Windows Hello. After 5 wrong passwords the agent waits before the next try
 - Switching key storage unpairs the apps that used the other storage and deletes their keys, after asking. The imported certificate stays unless you remove it too
