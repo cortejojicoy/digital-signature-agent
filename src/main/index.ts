@@ -38,6 +38,7 @@ import {
   type PairingResult,
   type StatusView,
   type UpdateView,
+  type VerifyResult,
 } from '../shared/ipc';
 import { Agent, type CertificateSummary } from './agent';
 import { CertificateError, CertificateStore } from './certificates';
@@ -45,12 +46,13 @@ import { APP_ORIGIN, appUrl, handleAppScheme, registerAppScheme } from './app-pr
 import type { Approval, ConfirmRequest, JobOutcome, RetryReason } from './jobs';
 import { loadNativeKeyStore, type Capabilities, type KeySource, type Sealer } from './keystore';
 import { PairingError, type PairingProgress } from './pairing';
-import { SCHEME, linkFromArgv } from './protocol';
+import { SCHEME, linkFromArgv, pdfFromArgv } from './protocol';
 import { AVOID_KEYCHAIN } from './build-info';
 import { SettingsStore } from './settings';
 import { Store, sealedTokenCipher, type TokenCipher } from './store';
 import { ALL_RELEASES_PAGE } from './release';
 import { checkForUpdates, getUpdateStatus, installUpdate, startUpdater } from './updater';
+import { PdfFileError, PdfVerifier, readPdfFile } from './verify/verifier';
 
 const APP_ROOT = path.join(__dirname, '..', '..');
 const RENDERER_DIR = path.join(APP_ROOT, 'dist', 'renderer');
@@ -66,6 +68,8 @@ const WINDOW_BACKGROUND = '#111113';
 // A chosen .p12 waits in memory for its password this long (pkcs12-key-storage-plan.md §6.3).
 const CERTIFICATE_FILE_TTL_MS = 5 * 60_000;
 const MAX_CERTIFICATE_FILE = 64 * 1024;
+// Checked PDFs the page may ask to open in the PDF viewer, by token.
+const MAX_VERIFIED_FILES = 20;
 
 // ── Single instance + protocol registration (§7.2) ──
 
@@ -100,6 +104,12 @@ function main(): void {
   let developerMode = DEV;
   // The .p12 the user picked, held here so the page never sees its path or bytes.
   let certificateFile: { token: string; name: string; data: Buffer; expires: number } | null = null;
+  // Verify a PDF: files opened with the agent before `ready`, and the paths
+  // behind the tokens the page holds (it never sees a path itself).
+  let verifier: PdfVerifier | null = null;
+  const pendingFiles: string[] = [];
+  const verifiedFiles = new Map<string, string>();
+  let verifyRequests = 0;
 
   interface PendingConfirm {
     request: ConfirmRequest;
@@ -120,10 +130,17 @@ function main(): void {
     event.preventDefault();
     deliver(url);
   });
-  // Windows delivers links in the argv of a second launch.
-  app.on('second-instance', (_event, argv) => {
+  // macOS delivers "Open With" files via open-file, possibly before `ready`.
+  app.on('open-file', (event, filePath) => {
+    event.preventDefault();
+    openFileFromOs(filePath);
+  });
+  // Windows delivers links, and files opened with the agent, in the argv of a second launch.
+  app.on('second-instance', (_event, argv, workingDirectory) => {
     const link = linkFromArgv(argv);
+    const pdf = link ? null : pdfFromArgv(argv);
     if (link) deliver(link);
+    else if (pdf) openFileFromOs(path.resolve(workingDirectory, pdf));
     else showMainWindow();
   });
 
@@ -160,15 +177,17 @@ function main(): void {
     const certificates = new CertificateStore(app.getPath('userData'));
     await certificates.load();
 
+    // In Developer mode, requests go through Chromium's network stack, which
+    // trusts the OS certificate store, so Herd / Valet / mkcert HTTPS works
+    // for local testing. Otherwise Node's fetch and its bundled CA list.
+    const agentFetch = (input: string, init: RequestInit) => (developerMode ? net.fetch(input, init) : fetch(input, init));
+
     agent = new Agent({
       keystore,
       store,
       agentVersion: app.getVersion(),
       allowInsecureLocalNetwork: developerMode,
-      // In Developer mode, requests go through Chromium's network stack, which
-      // trusts the OS certificate store, so Herd / Valet / mkcert HTTPS works
-      // for local testing. Otherwise Node's fetch and its bundled CA list.
-      fetch: (input, init) => (developerMode ? net.fetch(input, init) : fetch(input, init)),
+      fetch: agentFetch,
       biometryOnly: process.env.KUKUX_BIOMETRY_ONLY === '1',
       certificates,
       keyStorage: () => settings?.get().keyStorage ?? null,
@@ -187,6 +206,17 @@ function main(): void {
       onServersChanged: broadcastStatus,
     });
 
+    verifier = new PdfVerifier({
+      // Paired apps only, in pairing order; plain-HTTP ones only in Developer mode, as for signing.
+      targets: () =>
+        store
+          .list()
+          .filter((s) => developerMode || s.origin.startsWith('https://'))
+          .map((s) => ({ origin: s.origin, name: s.name })),
+      anchors: store,
+      fetch: agentFetch,
+    });
+
     registerIpc();
     // Device types for older pairings, and revokes left over from an offline unpair.
     void agent.init().catch(() => {});
@@ -196,8 +226,11 @@ function main(): void {
 
     const initial = linkFromArgv(process.argv);
     if (initial) pendingLinks.push(initial);
+    const initialPdf = initial ? null : pdfFromArgv(process.argv);
+    if (initialPdf) pendingFiles.push(path.resolve(initialPdf));
     for (const link of pendingLinks.splice(0)) void agent.handleLink(link);
     if (store.list().length === 0) showMainWindow();
+    for (const file of pendingFiles.splice(0)) openFileFromOs(file);
   });
 
   // ── Windows ──
@@ -346,6 +379,7 @@ function main(): void {
       tray?.setContextMenu(
         Menu.buildFromTemplate([
           { label: 'Open', click: () => showMainWindow() },
+          { label: 'Verify a PDF…', click: () => void chooseFromTray() },
           {
             label: 'Check for updates',
             click: () => {
@@ -462,6 +496,62 @@ function main(): void {
       expires: Date.now() + CERTIFICATE_FILE_TTL_MS,
     };
     return { ok: true, token: certificateFile.token, fileName: certificateFile.name };
+  }
+
+  // ── Verify a PDF ──
+
+  /** Reads and checks a file in this process; the page gets the verdict and a token, never the bytes or path. */
+  async function verifyFile(filePath: string): Promise<VerifyResult> {
+    const fileName = typeof filePath === 'string' ? path.basename(filePath) : '';
+    try {
+      const file = await readPdfFile(filePath);
+      const report = await verifier!.verify(file.bytes);
+      return { ok: true, token: rememberVerifiedFile(filePath), fileName: file.name, size: file.size, ...report };
+    } catch (err) {
+      if (err instanceof PdfFileError) return { ok: false, error: err.message, code: err.code, fileName };
+      return { ok: false, error: "That file couldn't be checked.", code: 'unreadable', fileName };
+    }
+  }
+
+  function rememberVerifiedFile(filePath: string): string {
+    const token = randomBytes(16).toString('hex');
+    verifiedFiles.set(token, filePath);
+    while (verifiedFiles.size > MAX_VERIFIED_FILES) verifiedFiles.delete(verifiedFiles.keys().next().value!);
+    return token;
+  }
+
+  /** A PDF opened with the agent from Finder / Explorer: show the window, then the verdict. */
+  function openFileFromOs(filePath: string): void {
+    if (!verifier) {
+      pendingFiles.push(filePath);
+      return;
+    }
+    const id = ++verifyRequests;
+    const win = showMainWindow();
+    if (process.platform === 'darwin') app.focus({ steal: true });
+    const send = (channel: string, payload: unknown) => {
+      if (win.isDestroyed()) return;
+      if (win.webContents.isLoading()) win.webContents.once('did-finish-load', () => win.webContents.send(channel, payload));
+      else win.webContents.send(channel, payload);
+    };
+    send(IPC.verifyRequested, { id, fileName: path.basename(filePath) });
+    void verifyFile(filePath).then((result) => send(IPC.verifyFinished, { id, result }));
+  }
+
+  async function choosePdf(): Promise<string | null> {
+    const options: Electron.OpenDialogOptions = {
+      title: 'Choose a PDF to verify',
+      buttonLabel: 'Verify',
+      properties: ['openFile'],
+      filters: [{ name: 'PDF document', extensions: ['pdf'] }],
+    };
+    const picked = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    return picked.canceled ? null : (picked.filePaths[0] ?? null);
+  }
+
+  async function chooseFromTray(): Promise<void> {
+    const file = await choosePdf();
+    if (file) openFileFromOs(file);
   }
 
   // ── IPC (§7.1): only from our own bundled pages ──
@@ -666,6 +756,18 @@ function main(): void {
       } catch (err) {
         return certificateFailure(err);
       }
+    });
+    handle(IPC.chooseAndVerifyPdf, async (): Promise<VerifyResult | null> => {
+      const file = await choosePdf();
+      return file ? verifyFile(file) : null;
+    });
+    // A path from a drop (preload, webUtils.getPathForFile). readPdfFile checks it: absolute, a file, ≤ 50 MB, %PDF-.
+    handle(IPC.verifyPdf, (filePath: unknown) => verifyFile(typeof filePath === 'string' ? filePath : ''));
+    handle(IPC.openVerifiedPdf, async (token: unknown): Promise<{ ok: boolean; error?: string }> => {
+      const file = verifiedFiles.get(String(token));
+      if (!file) return { ok: false, error: 'Check the file again to open it.' };
+      const error = await shell.openPath(file);
+      return error ? { ok: false, error } : { ok: true };
     });
     handle(IPC.removeCertificate, async (id: unknown): Promise<CertificateRemoveResult> => {
       try {

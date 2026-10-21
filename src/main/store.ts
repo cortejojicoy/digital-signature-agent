@@ -11,6 +11,12 @@
 // pending-revokes.json holds unpairs the server hasn't acknowledged yet
 // (§7.3), with their token sealed the same way. Their identity (signing) key
 // is already gone; only the session key is kept, to authenticate the revoke.
+//
+// trust-anchors.json pins each paired app's signing CA (GET
+// /signature/trust/ca.pem), fetched the first time a PDF is verified against
+// it. "Verify a PDF" trusts only this stored copy, so a file can never bring
+// its own root. Pairing again re-pins it; unpairing the last pairing at that
+// origin drops it.
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
@@ -91,6 +97,17 @@ interface ServersFile {
 
 type TokensFile = Record<string, string>;
 
+/** A paired app's CA certificate (PEM), by origin. Public data. */
+export interface TrustAnchor {
+  pem: string;
+  pinnedAt: string;
+}
+
+interface TrustAnchorsFile {
+  version: 1;
+  anchors: Record<string, TrustAnchor>;
+}
+
 interface RevokesFile {
   version: 1;
   revokes: Array<PendingRevoke & { token: string }>;
@@ -100,6 +117,7 @@ export class Store {
   private servers: PairedServer[] = [];
   private tokens: TokensFile = {};
   private revokes: Array<PendingRevoke & { token: string }> = [];
+  private anchors: Record<string, TrustAnchor> = {};
   private loaded = false;
 
   constructor(
@@ -113,6 +131,8 @@ export class Store {
     this.tokens = (await readJson<TokensFile>(this.file('tokens.json'))) ?? {};
     const revokes = await readJson<RevokesFile>(this.file('pending-revokes.json'));
     this.revokes = revokes?.version === 1 && Array.isArray(revokes.revokes) ? revokes.revokes : [];
+    const anchors = await readJson<TrustAnchorsFile>(this.file('trust-anchors.json'));
+    this.anchors = anchors?.version === 1 && anchors.anchors && typeof anchors.anchors === 'object' ? anchors.anchors : {};
     this.loaded = true;
   }
 
@@ -140,6 +160,8 @@ export class Store {
     }
     this.servers = [...this.servers.filter((s) => s.id !== server.id), { ...server }];
     this.tokens = { ...this.tokens, [server.id]: this.cipher.encrypt(token).toString('base64') };
+    // A new pairing is a new trust decision: pin the CA again on next use.
+    this.anchors = withoutKey(this.anchors, server.origin);
     await this.flush();
   }
 
@@ -164,10 +186,32 @@ export class Store {
 
   async remove(serverId: string): Promise<void> {
     this.assertLoaded();
+    const origin = this.servers.find((s) => s.id === serverId)?.origin;
     this.servers = this.servers.filter((s) => s.id !== serverId);
     const { [serverId]: _removed, ...rest } = this.tokens;
     this.tokens = rest;
+    if (origin && !this.servers.some((s) => s.origin === origin)) this.anchors = withoutKey(this.anchors, origin);
     await this.flush();
+  }
+
+  // ── Trust anchors for "Verify a PDF" ──
+
+  trustAnchor(origin: string): TrustAnchor | null {
+    this.assertLoaded();
+    const found = Object.hasOwn(this.anchors, origin) ? this.anchors[origin] : undefined;
+    return found && typeof found.pem === 'string' ? { ...found } : null;
+  }
+
+  /** Pins a CA for a paired origin. Never replaces an existing pin, and ignores origins nothing is paired with. */
+  async pinTrustAnchor(origin: string, pem: string): Promise<TrustAnchor | null> {
+    this.assertLoaded();
+    const existing = this.trustAnchor(origin);
+    if (existing) return existing;
+    if (!this.servers.some((s) => s.origin === origin)) return null;
+    const anchor: TrustAnchor = { pem, pinnedAt: new Date().toISOString() };
+    this.anchors = { ...this.anchors, [origin]: anchor };
+    await this.flush();
+    return { ...anchor };
   }
 
   // ── Pending revokes (§7.3) ──
@@ -214,6 +258,7 @@ export class Store {
     await writeJsonAtomic(this.file('servers.json'), { version: 1, servers: this.servers } satisfies ServersFile);
     await writeJsonAtomic(this.file('tokens.json'), this.tokens);
     await writeJsonAtomic(this.file('pending-revokes.json'), { version: 1, revokes: this.revokes } satisfies RevokesFile);
+    await writeJsonAtomic(this.file('trust-anchors.json'), { version: 1, anchors: this.anchors } satisfies TrustAnchorsFile);
   }
 
   private file(name: string): string {
@@ -223,6 +268,12 @@ export class Store {
   private assertLoaded(): void {
     if (!this.loaded) throw new Error('Store.load() must be called first');
   }
+}
+
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!Object.hasOwn(record, key)) return record;
+  const { [key]: _removed, ...rest } = record;
+  return rest;
 }
 
 export async function readJson<T>(file: string): Promise<T | null> {
