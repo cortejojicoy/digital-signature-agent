@@ -3,3 +3,5 @@
 *.pfx binary
 *.cer binary
 *.der binary
+# The verification fixtures are hashed byte for byte.
+*.pdf binary
